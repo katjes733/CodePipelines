@@ -1,0 +1,1446 @@
+# MIT License
+# 
+# Copyright (c) 2021 Martin Macecek
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Pipeline for CD
+
+# -----------------------------------------------------------------------------
+# Parameters
+# -----------------------------------------------------------------------------
+Parameters:
+  PipelineName:
+    Description: A name for pipeline
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[a-z0-9\.-]{1,20}$
+  RepositoryName:
+    Description: Name of the repository - leave empty to work with sources in S3
+    ConstraintDescription: Must be a valid CodeCommit name
+    Type: String
+    AllowedPattern: ^$|^[\w\.-]{1,100}$
+  BranchName:
+    Description: Name of the branch to monitor for code changes
+    ConstraintDescription: Must be a valid GIT branch name, even if CodeCommit is not used (leave default)
+    Type: String
+    Default: acceptance
+    AllowedPattern: ^((feature|release|bugfix|hotfix)\/)?[\w\.\-]{1,80}$
+  SourceObjectKey:
+    Description: 'S3 source artifact'
+    Type: String
+    Default: 'templates.zip'
+  TemplateFileName:
+    Description: The file name of the template
+    Type: String
+    Default: 'template.yml'
+  TestStackName:
+    Description: A name for the test stack
+    Type: String
+    Default: 'teststack'
+    AllowedPattern: ^[a-z0-9\.-]{1,20}$
+  TestStackConfig:
+    Description: The configuration file name for the test stack
+    Type: String
+    Default: 'template-configuration.json'
+  DeploymentRegions:
+    Description: The regions this pipeline shoulf deploy to
+    Type: String
+    Default: 'Current'
+    AllowedValues:
+      - 'Current'
+      - 'Development'
+      - 'All'
+      - 'us-east-1'
+      - 'us-west-2'
+      - 'eu-central-1'
+      - 'eu-west-1'
+      - 'ap-northeast-1'
+      - 'ap-northeast-2'
+      - 'ap-southeast-1'
+      - 'ap-southeast-2'
+      - 'eu-west-2'
+      - 'ap-south-1'
+  ExecutionRate:
+    Description: The execution rate in hours; 0 indicates no scheduled execution and execution on code change only
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 24
+  ResourcePrefix:
+    Description: The prefix for all resources
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/ResourcePrefix
+    AllowedValues:
+      - /CD/ResourcePrefix
+  ArtifactBucketNameId:
+    Description: The configurable part of the Artifact Bucket Name
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /S3/ArtifactBucketNameId
+    AllowedValues:
+      - /S3/ArtifactBucketNameId
+  NotifyOnSuccess:
+    Description: Whether or not to notify if a CodePipline Execution succeeded
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
+  FailBuildOnCloudformationTemplateFailures:
+    Description: Whether or not to faila build if failures in CloudFormation are detected
+    Type: String
+    Default: true
+    AllowedValues:
+      - true
+      - false
+  GlobalArtifactBucketNamePrefix:
+    Description: Name of the global artifacts Bucket
+    ConstraintDescription: Must be a valid Bucket ending on the account number and without any region information
+    Type: String
+    Default: 'artifacts-111122223333'
+    AllowedPattern: ^[a-z0-9-]{0,7}([a-z0-9-]{1,23})-\d{12}$
+  GlobalArtifactS3Prefix:
+    Description: Prefix for files in global-artifacts bucket. Supports sub-directory structure. eg. path1/path2 !!! value cannot end with a slash (/) !!!
+    ConstraintDescription: Must be a valid Prefix
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|(?!.*(\.|\/)$)(^([a-zA-Z0-9]+(\/?[a-zA-Z0-9-_])*)$)
+
+# -----------------------------------------------------------------------------
+# Conditions
+# -----------------------------------------------------------------------------
+Conditions:
+  UseSourceCodeCommit: !Not [!Equals [!Ref RepositoryName, '']]
+  IsDefaultGlobalArtifactS3Prefix: !Equals [!Ref GlobalArtifactS3Prefix, '']
+  IsAcceptance: !Or [!Equals [!Ref GlobalArtifactS3Prefix, 'Acceptance'], !Equals [!Ref GlobalArtifactS3Prefix, 'acceptance'], !Condition IsDefaultGlobalArtifactS3Prefix]
+  IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
+  IsScheduledExecution: !Not [!Condition IsChangeExecution]
+  IsSourceCodeCommitAndAcceptanceAndChangeExecution: !And [!Condition UseSourceCodeCommit, !Condition IsAcceptance, !Condition IsChangeExecution]
+  UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
+  NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
+  IsDynamicPipelineName: !Equals [!Ref PipelineName, '']  
+  UsEast1:       !Or [!Equals [!Ref DeploymentRegions, 'us-east-1'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-east-1']],    !Equals [!Ref DeploymentRegions, 'Development']]
+  UsWest2:       !Or [!Equals [!Ref DeploymentRegions, 'us-west-2'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-west-2']]]
+  EuCentral1:    !Or [!Equals [!Ref DeploymentRegions, 'eu-central-1'],   !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'eu-central-1']], !Equals [!Ref DeploymentRegions, 'Development']]
+  EuWest1:       !Or [!Equals [!Ref DeploymentRegions, 'eu-west-1'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'eu-west-1']]]
+  ApNortheast1:  !Or [!Equals [!Ref DeploymentRegions, 'ap-northeast-1'], !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'ap-northeast-1']]]
+  ApNortheast2:  !Or [!Equals [!Ref DeploymentRegions, 'ap-northeast-2'], !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'ap-northeast-2']]]
+  ApSoutheast1:  !Or [!Equals [!Ref DeploymentRegions, 'ap-southeast-1'], !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'ap-southeast-1']]]
+  ApSoutheast2:  !Or [!Equals [!Ref DeploymentRegions, 'ap-southeast-2'], !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'ap-southeast-2']]]
+  # Not yet supported by KITS:
+  EuWest2:       !Equals ['KitsSupported', 'False']
+  # EuWest2:       !Or [!Equals [!Ref DeploymentRegions, 'eu-west-2'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'eu-west-2']]]
+  ApSouth1:      !Equals ['KitsSupported', 'False']
+  # ApSouth1:      !Or [!Equals [!Ref DeploymentRegions, 'ap-south-1'],    !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'ap-south-1 ']]]
+
+# -----------------------------------------------------------------------------
+# Mappings
+# -----------------------------------------------------------------------------
+Mappings:
+  # First line must be indented by 8, every line following with 14.
+  # This is due to the code being inserted into the buildspec.yml with 6 indents  
+  Code:
+    Python:      
+      GetParametersFromTempate: |
+        import argparse, sys, yaml, io, json, os, re, rstr
+              from pathlib import Path
+
+              def validate_json_string(arg_value):
+                  try:
+                      print(arg_value)
+                      json.loads(arg_value)
+                  except Exception as error: 
+                      raise argparse.ArgumentTypeError(f"{arg_value} is no valid JSON string.")
+                  return arg_value 
+
+              def yml_filename_regex(arg_value, pat=re.compile(r"(?i)^([\w\- ]*/)*[\w-]*\.yml$")):
+                  if not pat.match(arg_value):
+                      raise argparse.ArgumentTypeError("Not a valid YML file name.")
+                  return arg_value
+
+              def json_filename_regex(arg_value, pat=re.compile(r"(?i)^([\w\- ]*/)*[\w-]*\.json$")):
+                  if not pat.match(arg_value):
+                      raise argparse.ArgumentTypeError("Not a valid JSON file name.")
+                  return arg_value
+
+              parser = argparse.ArgumentParser()
+              parser.add_argument('template', type=yml_filename_regex, help='The file name of the CloudFormation template. Must be valid .yml file.')
+              parser.add_argument('configFile', type=json_filename_regex, help='The (output) file name of the generated JSON configuration. Must be valid .json file.')
+              parser.add_argument('--overrideParams', type=validate_json_string, help='The key/pair values to override as JSON')
+              args = parser.parse_args()
+
+              template = args.template
+              template_config = args.configFile
+
+              def get_parameters_from_template():
+                  dict = None
+                  output = io.StringIO()
+                  with open(template, 'r') as stream:
+                      for line in stream:
+                          if 'Metadata:' in line or 'Resources:' in line:            
+                              break
+                          else:            
+                              output.write(line)    
+                  output.seek(0)
+                  dict = yaml.full_load(output)
+                  return dict['Parameters']
+
+              def generate_default_value(parameter): 
+                  defaultValue = '' 
+                  if parameter['Type'] == 'String':
+                      if 'AllowedPattern' in parameter and not re.match(parameter['AllowedPattern'], defaultValue):
+                          defaultValue = rstr.xeger(parameter['AllowedPattern'])
+                      if 'MinLength' in parameter:
+                          defaultValue = rstr.xeger(f"\w{{{parameter['MinLength']}}}")
+                  elif parameter['Type'] == 'Number':
+                      defaultValue = '0'
+                      if 'MinValue' in parameter:
+                          defaultValue = f"{parameter['MinValue']}"
+                  return defaultValue
+
+              def prepare_configuration(params):
+                  config = {}
+                  for pName in params.keys():
+                      if 'Default' in params[pName]:
+                          value = params[pName]['Default']
+                          config[pName] = f"{str(value).lower() if type(value) is bool else value}"
+                      elif 'AllowedValues' in params[pName] and params[pName]['AllowedValues']:
+                          config[pName] = params[pName]['AllowedValues'][0]
+                      else:
+                          config[pName] = generate_default_value(params[pName])
+                  return config
+
+              def override_parameters(config):
+                  if args.overrideParams:
+                      overrides = json.loads(args.overrideParams)
+                      for key in overrides.keys(): 
+                          if key in config:
+                              config[key] = overrides[key]
+                  return config
+
+              def create_parameters_json_file(config):
+                  result = {'Parameters': config}
+                  json_content = json.dumps(result, indent = 4)
+                  Path(Path(template_config).parent).mkdir(parents=True, exist_ok=True)
+                  configFile = open(template_config, 'w')
+                  print(json_content, file=configFile)
+                  configFile.close()
+
+              def process():
+                  print(f"Template: {template}")
+                  params = get_parameters_from_template()
+                  prepared_config = prepare_configuration(params)
+                  completed_config = override_parameters(prepared_config)
+                  create_parameters_json_file(completed_config)
+
+              try:
+                  print("Starting function") 
+                  process()
+                  print("Finished function")
+              except Exception as error:
+                  print(f"Error {error}")
+                  raise
+      GetJunitTestReportFromReport: |
+        import argparse, json, sys, re, pathlib
+            sys.path.insert(0, "external")
+            from junit_xml import TestSuite, TestCase
+            from os import walk
+
+            def xml_filename_regex(arg_value, pat=re.compile(r"(?i)^[\w-]*\.xml$")):
+                if not pat.match(arg_value):
+                    raise argparse.ArgumentTypeError
+                return arg_value
+
+            parser = argparse.ArgumentParser()
+            parser.add_argument('report', help='The file name of the scan report')
+            parser.add_argument('reportType', choices=['CFN-NAG', 'CFN-GUARD', 'CFN-LINT'], help='The report type to use as conversion basis')
+            parser.add_argument('output', type=xml_filename_regex, help='The output xml file name of the generated JSON configuration')
+            parser.add_argument('--rules', help='The file name of the rules file')
+            parser.add_argument('--pathToTemplates', help='The path to the CloudFormation templates')
+            args = parser.parse_args()
+
+            if (args.reportType == 'CFN-NAG' or args.reportType == 'CFN-LINT') and args.rules is None:
+                raise ValueError(f"For reportType {args.reportType}, parameter rules must be provided")
+            if (args.reportType == 'CFN-LINT') and args.rules is None:
+                raise ValueError(f"For reportType {args.reportType}, parameter pathToTemplates must be provided")
+
+            def write_junit_xml_report(rules, report):
+                test_cases = []
+                for file_findings in report:
+                    for rule in rules:
+                        test_case=TestCase(f"{rule['id']} - {file_findings['filename']}")
+                        violations = [v for v in file_findings["file_results"]['violations'] if v['id'] == rule['id']] 
+                        if violations:
+                            output=",\n".join(list(map(lambda x, y: f"Line {x} ({y})", violations[0]['line_numbers'], violations[0]['logical_resource_ids'])))
+                            test_case.add_failure_info(output=f"{output}", message=violations[0]['message'])
+                        test_cases.append(test_case)
+
+                test_suite = TestSuite(f"{args.reportType} test suite", test_cases)
+                junitReportFile = open(args.output, 'w')
+                junitReportFile.write(TestSuite.to_xml_string([test_suite], prettyprint=True))
+                junitReportFile.close()
+
+            def generate_junit_report_from_cfn_nag():    
+                rulesFile = open(args.rules, 'r')
+                rules = json.load(rulesFile)
+                rulesFile.close()
+
+                reportFile = open(args.report, 'r')
+                report = json.load(reportFile)
+                reportFile.close()
+
+                write_junit_xml_report(rules, report)
+
+            def generate_junit_report_from_cfn_lint():
+                pattern =  re.compile(r"^(?P<id>[EW]{1}\d+)\: (?P<message>.*)$")
+                rules = []
+                with open(args.rules, 'r') as stream:
+                    for line in stream:  
+                        match = pattern.match(line)     
+                        if match:
+                            rules.append({"id": match.group('id'), "type": "FAIL" if match.group('id').startswith('E') else "WARN", "message": match.group('id')})
+
+                reportFile = open(args.report, 'r')
+                lintReport = json.load(reportFile)
+                reportFile.close()
+
+                templates = next(walk(args.pathToTemplates), (None, None, []))[2]
+                report = []
+                for template in templates:
+                    report.append({"filename": f"{args.pathToTemplates}/{template}", "file_results": {"failure_count": 0, "violations": []}})
+
+                for finding in lintReport:
+                    type = "FAIL" if finding['Level'] == 'Error' else "WARN"
+                    filename = pathlib.PureWindowsPath(finding['Filename']).as_posix()
+                    id = finding['Rule']['Id']
+                    logical_resource_id = finding['Location']['Path'][1]
+                    line_number = finding['Location']['Start']['LineNumber']
+                    file = [f for f in report if f['filename'] == filename ]
+                    if file:
+                        print(f"Filename {filename} already exists; adding violation")
+                        violations = file[0]['file_results']['violations'] 
+                        violation = [v for v in violations if v['id'] == id]
+                        if violation:
+                            print(f"Violation {violation[0]['id']} already exists; adding details to violation")
+                            violation[0]['logical_resource_ids'].append(logical_resource_id)
+                            violation[0]['line_numbers'].append(line_number)
+                        else:
+                            print(f"Violation for Rule {id} does not yet exist; adding new violation")
+                            file[0]['file_results']['failure_count'] += 1
+                            violations.append({"id": id, "type": type, "message": finding['Rule']['ShortDescription'],"logical_resource_ids": [logical_resource_id], "line_numbers": [line_number]})
+                    else:
+                        print(f"Filename {filename} does not yet exist; adding violation as first to new record")            
+                        report.append({
+                            "filename": filename,
+                            "file_results": {"failure_count": 1, "violations": [{"id": id, "type": type, "message": finding['Rule']['ShortDescription'],"logical_resource_ids": [logical_resource_id], "line_numbers": [line_number]}]}})
+
+                write_junit_xml_report(rules, report)
+
+            # this function is experimental for now as it has not been verified with cfn_guard
+            def generate_junit_report_from_cfn_guard():
+                test_cases = []
+                count_id = 0
+                reportFile = open(args.report, 'r')
+                report = json.load(reportFile)
+                reportFile.close()
+                for file_findings in report:
+                    finding = file_findings["message"]
+                    # extract resource id from finding line
+                    resource_regex = re.search("^\[([^]]*)]", finding)
+                    if resource_regex:
+                        resource_id = resource_regex.group(1)
+                        test_case = TestCase(f"{count_id} - {finding}", classname=resource_id)
+                        test_case.add_failure_info(output="%s#R:%s" % (file_findings["file"], resource_id))
+                        test_cases.append(test_case)
+                        count_id += 1
+
+                test_suite = TestSuite(f"{args.reportType} test suite", test_cases)
+                junitReportFile = open(args.output, 'w')
+                junitReportFile.write(TestSuite.to_xml_string([test_suite], prettyprint=True))
+                junitReportFile.close()
+
+            def process_report():
+                if args.reportType == 'CFN-NAG':            
+                    return generate_junit_report_from_cfn_nag()
+                if args.reportType == 'CFN-LINT':            
+                    return generate_junit_report_from_cfn_lint()
+                # CFN-GUARD is not yet supported
+                # elif args.reportType == 'CFN-GUARD':            
+                #     return generate_junit_report_from_cfn_guard()
+                else:
+                    print(f"Not yet supported report type: {args.reportType}")
+
+            try:
+                print("Starting function") 
+                process_report()
+                print("Finished function")
+            except Exception as error:
+                print("Error {}".format(error))
+                raise
+  Tools:
+    cfn-nag:
+      Version: "0.7.5"
+    cfn-lint:
+      Version: "0.49.2"
+
+# -----------------------------------------------------------------------------
+# Resources
+# -----------------------------------------------------------------------------
+Resources:
+  GetKmsKeyArn:
+    Type: Custom::GetKmsKeyArn
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: !Sub '${AWS::Region}'
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+  GetKmsKeyArnUsEast1:
+    Condition: UsEast1
+    Type: Custom::GetKmsKeyArnUsEast1
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: us-east-1
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-us-east-1'
+  GetKmsKeyArnUsWest2:
+    Condition: UsWest2
+    Type: Custom::GetKmsKeyArnUsWest2
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: us-west-2
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-us-west-2'
+  GetKmsKeyArnEuCentral1:
+    Condition: EuCentral1
+    Type: Custom::GetKmsKeyArnEuCentral1
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: eu-central-1
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-eu-central-1'
+  GetKmsKeyArnEuWest1:
+    Condition: EuWest1
+    Type: Custom::GetKmsKeyArnEuWest1
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: eu-west-1
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-eu-west-1'
+  GetKmsKeyArnApNortheast1:
+    Condition: ApNortheast1
+    Type: Custom::GetKmsKeyArnApNortheast1
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: ap-northeast-1
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-northeast-1'
+  GetKmsKeyArnApNortheast2:
+    Condition: ApNortheast2
+    Type: Custom::GetKmsKeyArnApNortheast2
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: ap-northeast-2
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-northeast-2'
+  GetKmsKeyArnApSoutheast1:
+    Condition: ApSoutheast1
+    Type: Custom::GetKmsKeyArnApSoutheast1
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: ap-southeast-1
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-southeast-1'
+  GetKmsKeyArnApSoutheast2:
+    Condition: ApSoutheast2
+    Type: Custom::GetKmsKeyArnApSoutheast2
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: ap-southeast-2
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-southeast-2'  
+  GetKmsKeyArnEuWest2:
+    Condition: EuWest2
+    Type: Custom::GetKmsKeyArnEuWest2
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: eu-west-2
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-eu-west-2' 
+  GetKmsKeyArnApSouth1:
+    Condition: ApSouth1
+    Type: Custom::GetKmsKeyArnApSouth1
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: ap-south-1
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-south-1'
+  CodeBuildProjectRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Complies with Coding Guidelines"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}CD-${AWS::Region}-CodeBuildRoleArtifacts'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal: 
+              Service: codebuild.amazonaws.com
+      Path: /
+  CodeBuildProjectRolePolicy:
+    Type: AWS::IAM::Policy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F4
+            reason: "Complies with Coding Guidelines"
+          - id: W12
+            reason: "Complies with Coding Guidelines"
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}CD-${AWS::Region}-CodeBuildPolicyArtifacts'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          # Access to Artifacts Store and Global Install Files Bucket
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub 'arn:aws:s3:::${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-*'
+              - !Sub 'arn:aws:s3:::${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-*/*'
+              - !Sub 'arn:aws:s3:::${GlobalArtifactBucketNamePrefix}-*'
+              - !Sub 'arn:aws:s3:::${GlobalArtifactBucketNamePrefix}-*/*'
+          # Access to Cloudwatch Logs
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+            Resource: arn:aws:logs:*:*:*
+      Roles:
+        - !Ref CodeBuildProjectRole
+  PrepareTemplateConfigCodeBuildProject:
+    Condition: UseSourceCodeCommit
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-PrepareTemplateConfig'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: Build project to prepare the CFN template configuration
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: ROOT_TEMPLATE
+            Type: PLAINTEXT
+            Value: !Sub 'CloudFormation/${TemplateFileName}'
+          - Name: ROOT_TEMPLATE_CONFIG
+            Type: PLAINTEXT
+            Value: !Sub 'Configuration/${TestStackConfig}'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub 
+          - |
+            version: 0.2
+            phases:
+              pre_build:
+                commands: |
+                  cat <<EOT >> script.py
+                  ${Function}
+                  EOT
+              build:
+                commands:
+                  - python script.py $ROOT_TEMPLATE $ROOT_TEMPLATE_CONFIG --overrideParams '{\"GlobalArtifactBucketNamePrefix\": \"${GlobalArtifactBucketNamePrefix}\", \"GlobalArtifactS3Prefix\": \"${GlobalArtifactS3Prefix}\"}'
+              post_build:
+                commands:
+                  - rm script.py
+                  - echo Build completed on `date`
+            artifacts:
+              files:
+                - '**/*'
+              discard-paths: no
+          - Function: !FindInMap [ Code, Python, GetParametersFromTempate ] 
+      TimeoutInMinutes: 5
+  VerificationTemplatesCodeBuildProject:
+    Condition: UseSourceCodeCommit
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-VerificationTemplates'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: Build project to prepare the CFN template configuration
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: PATH_TO_TEMPLATES
+            Type: PLAINTEXT
+            Value: 'CloudFormation'
+          - Name: FAIL_BUILD
+            Type: PLAINTEXT
+            Value: !Sub '${FailBuildOnCloudformationTemplateFailures}'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub 
+          - |
+            version: 0.2
+            phases:
+              install:
+                runtime-versions:
+                  ruby: 2.7
+                  python: 3.9
+                commands:
+                  - gem install cfn-nag -v ${CfnNagVersion}
+                  - if [[ "${CfnLintVersion}" < "0.51.0" ]]; then pip uninstall networkx --yes; pip install networkx==2.5.1 --quiet; fi                  
+                  - pip install cfn-lint==${CfnLintVersion}
+              pre_build:
+                commands: |
+                  cat <<EOT >> script.py
+                  ${Function}
+                  EOT
+              build:
+                commands:
+                  - cfn_nag_rules --output-format=json > cfn_nag_rules.json
+                  - CFN_NAG_RESULT=$(cfn_nag_scan --input-path $PATH_TO_TEMPLATES --fail-on-warnings --output-format=json > cfn_nag_result.json && echo OK || echo FAILED)
+                  - python script.py cfn_nag_result.json CFN-NAG cfn_nag_result.xml --rules cfn_nag_rules.json
+                  - cfn-lint --list-rules > cfn_lint_rules.txt
+                  - CFN_LINT_RESULT=$(cfn-lint $PATH_TO_TEMPLATES/*.yml --format json > cfn_lint_result.json && echo OK || echo FAILED)
+                  - python script.py cfn_lint_result.json CFN-LINT cfn_lint_result.xml --rules cfn_lint_rules.txt --pathToTemplates $PATH_TO_TEMPLATES
+                  - if [[ "$FAIL_BUILD" == "true" && ("$CFN_NAG_RESULT" == "FAILED" || "$CFN_LINT_RESULT" == "FAILED")]]; then printf "!####################################################################!\n\nFailing pipeline as failures in CloudFormation templates were detected\n\n!####################################################################!" && exit 1; fi
+              post_build:
+                commands:
+                  - rm script.py
+                  - echo Build completed on `date`
+            reports: 
+              CfnNagReport: 
+                files: 
+                  - cfn_nag_result.xml
+                discard-paths: 'yes'
+                file-format: 'JUNITXML'
+              CfnLintReport: 
+                files:
+                  - cfn_lint_result.xml
+                discard-paths: 'yes'
+                file-format: 'JUNITXML'             
+          - CfnNagVersion: !FindInMap [ Tools, cfn-nag, Version ] 
+            CfnLintVersion: !FindInMap [ Tools, cfn-lint, Version ]
+            Function: !FindInMap [ Code, Python, GetJunitTestReportFromReport ] 
+      TimeoutInMinutes: 5
+  PrepareSourcesCcCodeBuildProject:
+    Condition: UseSourceCodeCommit
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-PrepareSourcesCc'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: Build project to promote build artifacts
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: ROOT_TEMPLATE
+            Type: PLAINTEXT
+            Value: !Sub 'CloudFormation/${TemplateFileName}'
+          - Name: ROOT_TEMPLATE_CONFIG
+            Type: PLAINTEXT
+            Value: !Sub 'Configuration/${TestStackConfig}'
+          - Name: TARGET_ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Sub '${GlobalArtifactBucketNamePrefix}-eu-central-1'
+          - Name: TARGET_ARTIFACT_PATH
+            Type: PLAINTEXT
+            Value: !If [IsDefaultGlobalArtifactS3Prefix, 'Acceptance', !Ref GlobalArtifactS3Prefix]
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            post_build:
+              commands:
+                - echo copy Cloudformation templates from CodeCommit to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CloudFormation
+                - aws s3 cp CloudFormation s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CloudFormation --recursive --sse AES256
+                - echo copy Cognito Front End resources from CodeCommit to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CognitoHostedUI
+                - aws s3 cp Frontend/CognitoHostedUI s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CognitoHostedUI --recursive --sse AES256
+                - echo wait 60s for replication to all regions
+                - sleep 60
+          artifacts:
+            files:
+              - $ROOT_TEMPLATE
+              - $ROOT_TEMPLATE_CONFIG
+            discard-paths: yes
+      TimeoutInMinutes: 5
+  PrepareSourcesS3CodeBuildProject:
+    Condition: UseSourceCodeS3
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-PrepareSourcesS3'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: Build project to promote build artifacts
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !GetAtt CodeBuildProjectRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: SOURCE_ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !Sub '${GlobalArtifactBucketNamePrefix}-${AWS::Region}'
+          - Name: SOURCE_ARTIFACT_PATH
+            Type: PLAINTEXT
+            Value: !If [IsDefaultGlobalArtifactS3Prefix, 'Acceptance', !Ref GlobalArtifactS3Prefix]
+          - Name: SOURCE_S3_OBJECT
+            Type: PLAINTEXT
+            Value: !Ref SourceObjectKey
+          - Name: ROOT_TEMPLATE
+            Type: PLAINTEXT
+            Value: !Ref TemplateFileName
+          - Name: ROOT_TEMPLATE_CONFIGURATION
+            Type: PLAINTEXT
+            Value: !Ref TestStackConfig
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub 
+          - |         
+            version: 0.2
+            phases:
+              pre_build:
+                commands: |
+                  cat <<EOT >> script.py
+                  ${Function}
+                  EOT
+              build:
+                commands: |
+                  if test -f "./$ROOT_TEMPLATE"; then
+                    echo Using $ROOT_TEMPLATE from Source S3 Object $SOURCE_S3_OBJECT
+                  else
+                    echo Copy root template s3://$SOURCE_ARTIFACT_BUCKET/$SOURCE_ARTIFACT_PATH/CloudFormation/$ROOT_TEMPLATE to local directory
+                    aws s3 cp s3://$SOURCE_ARTIFACT_BUCKET/$SOURCE_ARTIFACT_PATH/CloudFormation/$ROOT_TEMPLATE ./$ROOT_TEMPLATE
+                  fi
+                  if test -f "./$ROOT_TEMPLATE_CONFIGURATION"; then
+                    echo Using $ROOT_TEMPLATE_CONFIGURATION from Source S3 Object $SOURCE_S3_OBJECT
+                  else
+                    echo Building $ROOT_TEMPLATE_CONFIGURATION based on $ROOT_TEMPLATE
+                    python script.py $ROOT_TEMPLATE $ROOT_TEMPLATE_CONFIG --overrideParams '{\"GlobalArtifactBucketNamePrefix\": \"${GlobalArtifactBucketNamePrefix}\", \"GlobalArtifactS3Prefix\": \"${GlobalArtifactS3Prefix}\"}'
+                  fi
+              post_build:
+                commands:
+                  - rm script.py
+                  - echo Build completed on `date`
+            artifacts:
+              files:
+                - $ROOT_TEMPLATE
+                - $ROOT_TEMPLATE_CONFIG
+              discard-paths: yes
+          - Function: !FindInMap [ Code, Python, GetParametersFromTempate ]
+      TimeoutInMinutes: 5
+  Pipeline: 
+    Type: AWS::CodePipeline::Pipeline
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E2540
+    Properties: 
+      Name: !If [IsDynamicPipelineName, !Join ["-", ["CFN", !Join ["-", !Split ["/", !Ref BranchName]]]], !Ref 'PipelineName']
+      RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineServiceRole'
+      Stages: 
+        - Name: Source
+          Actions:  
+            - !If
+              - UseSourceCodeCommit
+              - Name: TemplateSourceCodeCommit
+                ActionTypeId: 
+                  Category: Source
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CodeCommit
+                OutputArtifacts: 
+                  - Name: TsCc
+                Configuration:
+                  RepositoryName: !Ref RepositoryName
+                  BranchName: !Ref BranchName
+                  PollForSourceChanges: false
+                RunOrder: 1
+              - Name: TemplateSourceS3
+                ActionTypeId: 
+                  Category: Source
+                  Owner: AWS
+                  Version: '1'
+                  Provider: S3
+                OutputArtifacts: 
+                  - Name: TsS3
+                Configuration: 
+                  S3Bucket: !Sub '${ResourcePrefix}cd-sourcebucket-${AWS::AccountId}-${AWS::Region}'
+                  S3ObjectKey: !Ref SourceObjectKey
+                  PollForSourceChanges: false
+                RunOrder: 1        
+        - Name: Build
+          Actions:
+            - !If
+              - UseSourceCodeCommit
+              - Name: PrepareTemplateConfig
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CodeBuild
+                Configuration:
+                  ProjectName: !Ref PrepareTemplateConfigCodeBuildProject
+                InputArtifacts:
+                  - Name: TsCc
+                OutputArtifacts:
+                  - Name: TsCcX
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - UseSourceCodeCommit
+              - Name: VerificationTemplates
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CodeBuild
+                Configuration:
+                  ProjectName: !Ref VerificationTemplatesCodeBuildProject
+                InputArtifacts:
+                  - Name: TsCc
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - IsSourceCodeCommitAndAcceptanceAndChangeExecution
+              - Name: ApproveBuildArtifactPromotion
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: '1'
+                Configuration:
+                  NotificationArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}CD-CodePipeline-Approval-Topic'
+                  CustomData: !Sub 'Do you want to promote the code in ${RepositoryName} to s3://${GlobalArtifactBucketNamePrefix}-eu-central-1/${GlobalArtifactS3Prefix}?'
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - Name: PrepareSources
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !If [UseSourceCodeCommit, !Ref PrepareSourcesCcCodeBuildProject, !Ref PrepareSourcesS3CodeBuildProject]
+              InputArtifacts:
+                - !If
+                  - UseSourceCodeCommit
+                  - Name: TsCcX
+                  - Name: TsS3
+              OutputArtifacts:
+                - Name: GlobalSource
+              RunOrder: 3
+        - Name: TestStage
+          Actions:
+            - !If
+              - UsEast1
+              - Name: CreateStackUsEast1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}01\"}"
+                Region: us-east-1
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - UsWest2
+              - Name: CreateStackUsWest2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}02\"}"
+                Region: us-west-2
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - EuCentral1
+              - Name: CreateStackEuCentral1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}03\"}"
+                Region: eu-central-1
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - EuWest1
+              - Name: CreateStackEuWest1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}04\"}"
+                Region: eu-west-1
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - ApNortheast1
+              - Name: CreateStackApNortheast1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}05\"}"
+                Region: ap-northeast-1
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - ApNortheast2
+              - Name: CreateStackApNortheast2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}06\"}"
+                Region: ap-northeast-2
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - ApSoutheast1
+              - Name: CreateStackApSoutheast1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}07\"}"
+                Region: ap-southeast-1
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - ApSoutheast2
+              - Name: CreateStackApSoutheast2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}08\"}"
+                Region: ap-southeast-2
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - EuWest2
+              - Name: CreateStackEuWest2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}09\"}"
+                Region: eu-west-2
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - ApSouth1
+              - Name: CreateStackApSouth1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                InputArtifacts:
+                  - Name: GlobalSource
+                Configuration:
+                  ActionMode: REPLACE_ON_FAILURE
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                  Capabilities: CAPABILITY_NAMED_IAM
+                  TemplateConfiguration: !Sub "GlobalSource::${TestStackConfig}"
+                  TemplatePath: !Sub "GlobalSource::${TemplateFileName}"
+                  ParameterOverrides: !Sub "{\"SystemName\": \"${TestStackName}${AWS::AccountId}10\"}"
+                Region: ap-south-1
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - !If
+              - UsEast1
+              - Name: DeleteTestStackUsEast1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: us-east-1
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - UsWest2
+              - Name: DeleteTestStackUsWest2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: us-west-2
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - EuCentral1
+              - Name: DeleteTestStackEuCentral1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: eu-central-1
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - EuWest1
+              - Name: DeleteTestStackEuWest1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: eu-west-1
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - ApNortheast1
+              - Name: DeleteTestStackApNortheast1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: ap-northeast-1
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - ApNortheast2
+              - Name: DeleteTestStackApNortheast2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: ap-northeast-2
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - ApSoutheast1
+              - Name: DeleteTestStackApSoutheast1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: ap-southeast-1
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - ApSoutheast2
+              - Name: DeleteTestStackApSoutheast2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: ap-southeast-2
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - EuWest2
+              - Name: DeleteTestStackEuWest2
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: eu-west-2
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - !If
+              - ApSouth1
+              - Name: DeleteTestStackApSouth1
+                ActionTypeId:
+                  Category: Deploy
+                  Owner: AWS
+                  Provider: CloudFormation
+                  Version: '1'
+                Configuration:
+                  ActionMode: DELETE_ONLY
+                  RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
+                  StackName: !Ref TestStackName
+                Region: ap-south-1
+                RunOrder: 2
+              - !Ref AWS::NoValue
+      ArtifactStores:
+        - !If
+          - UsEast1
+          - Region: us-east-1
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-us-east-1'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnUsEast1.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - UsWest2
+          - Region: us-west-2
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-us-west-2'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnUsWest2.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - EuCentral1
+          - Region: eu-central-1
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-eu-central-1'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnEuCentral1.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - EuWest1
+          - Region: eu-west-1
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-eu-west-1'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnEuWest1.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - ApNortheast1
+          - Region: ap-northeast-1
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-northeast-1'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnApNortheast1.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - ApNortheast2
+          - Region: ap-northeast-2
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-northeast-2'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnApNortheast2.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - ApSoutheast1
+          - Region: ap-southeast-1
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-southeast-1'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnApSoutheast1.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - ApSoutheast2
+          - Region: ap-southeast-2
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-southeast-2'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnApSoutheast2.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - EuWest2
+          - Region: eu-west-2
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-eu-west-2'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnEuWest2.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        - !If 
+          - ApSouth1
+          - Region: ap-south-1
+            ArtifactStore: 
+              Type: S3
+              Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-ap-south-1'
+              EncryptionKey:
+                Id: !GetAtt GetKmsKeyArnApSouth1.KmsKeyArn
+                Type: KMS
+          - !Ref AWS::NoValue
+        
+  AmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${ResourcePrefix}StartPipelineExecution'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+  EventRuleOnChangeSourceS3:
+    Type: AWS::Events::Rule
+    Condition: UseSourceCodeS3
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceS3'
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - CopyObject
+            - PutObject
+            - CompleteMultipartUpload
+          requestParameters:
+            bucketName:
+              - !Sub '${ResourcePrefix}cd-sourcebucket-${AWS::AccountId}-${AWS::Region}'
+            key:
+              - !Ref SourceObjectKey
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub '${AWS::StackName}'
+  EventRuleOnChangeSourceCodeCommit:
+    Type: AWS::Events::Rule
+    Condition: UseSourceCodeCommit
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceCodeCommit'
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref BranchName
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub '${AWS::StackName}'
+  EventRuleOnSchedule:
+    Type: AWS::Events::Rule
+    Condition: IsScheduledExecution
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnSchedule'
+      ScheduleExpression: !Sub 'rate(${ExecutionRate} hours)'
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub '${AWS::StackName}'
+  EventRuleOnPipelineExecutionStateChange:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnPipelineExecutionStateChange'
+      EventPattern:
+        source:
+          - aws.codepipeline
+        detail-type:
+          - CodePipeline Pipeline Execution State Change
+        detail:
+          state:
+            - FAILED
+            - !If
+              - NotifySuccess
+              - SUCCEEDED
+              - !Ref 'AWS::NoValue'
+          pipeline: 
+            - !Ref Pipeline
+      Targets:
+        - Arn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
+          Id: !Sub '${AWS::StackName}'
+  NotifyCdTeamsPermissions:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventRuleOnPipelineExecutionStateChange.Arn
