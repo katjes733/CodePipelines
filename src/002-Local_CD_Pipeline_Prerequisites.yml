@@ -30,7 +30,7 @@ Parameters:
   WebHookUrl:
     Description: The Webhook URL
     Type: String
-    Default: 'https://werumitsolutionsgmbh.webhook.office.com/webhookb2/5094bf84-73dc-428b-9361-15e410cdcbee@671a14c2-fa20-4942-a14b-22aa14a8b59a/IncomingWebhook/247bb7ada96244f4bfad97c891e85e7a/79686040-3501-4122-8a42-f8e60af5d410'
+    Default: ''
   ResourcePrefix:
     Description: The prefix for all resources
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -981,7 +981,9 @@ Resources:
       StageName: call
 
   ApprovalApiGatewayUsagePlan:
-    Type: 'AWS::ApiGateway::UsagePlan'
+    Type: 'AWS::ApiGateway::UsagePlan'    
+    DependsOn:
+      - ApprovalApiGatewayDeployment
     Properties:
       ApiStages:
         - ApiId: !Ref ApprovalApiGateway

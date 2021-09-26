@@ -104,7 +104,7 @@ Parameters:
       - false
       - true
   FailBuildOnCloudformationTemplateFailures:
-    Description: Whether or not to faila build if failures in CloudFormation are detected
+    Description: Whether or not to fail a build if failures in CloudFormation are detected
     Type: String
     Default: true
     AllowedValues:
