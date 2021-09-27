@@ -43,6 +43,12 @@ Parameters:
     Type: String
     Default: acceptance
     AllowedPattern: ^((feature|release|bugfix|hotfix)\/)?[\w\.\-]{1,80}$
+  CodeCommitRoleArn:
+    Description: ARN of a role that allows cross account access to a CodeCommit repository
+    ConstraintDescription: Must be a valid IAM ROle ARN or empty
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^arn:aws:iam::\d{12}:role\/[a-zA-Z0-9-]+$
   SourceObjectKey:
     Description: 'S3 source artifact'
     Type: String
@@ -133,6 +139,7 @@ Conditions:
   IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
   IsScheduledExecution: !Not [!Condition IsChangeExecution]
   IsSourceCodeCommitAndAcceptanceAndChangeExecution: !And [!Condition UseSourceCodeCommit, !Condition IsAcceptance, !Condition IsChangeExecution]
+  IsCrossAccountCodeCommit: !Not [!Equals [!Ref CodeCommitRoleArn, '']]
   UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
   NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
   IsDynamicPipelineName: !Equals [!Ref PipelineName, '']  
@@ -797,6 +804,7 @@ Resources:
                   RepositoryName: !Ref RepositoryName
                   BranchName: !Ref BranchName
                   PollForSourceChanges: false
+                RoleArn: !If [IsCrossAccountCodeCommit, !Ref CodeCommitRoleArn, !Ref AWS::NoValue]
                 RunOrder: 1
               - Name: TemplateSourceS3
                 ActionTypeId: 
