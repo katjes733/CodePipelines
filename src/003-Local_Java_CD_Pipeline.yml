@@ -121,6 +121,11 @@ Parameters:
     Type: String
     Default: '111122223333'
     AllowedPattern: ^\d{12}$
+  JavaDocAllowedCidrs:
+    Description: The allowed CIDRs to access the JavaDoc
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))(,(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2])))*$
 
 # -----------------------------------------------------------------------------
 # Conditions
@@ -527,10 +532,7 @@ Resources:
     Type: AWS::WAFv2::IPSet
     Condition: IsPublishJavaDoc
     Properties: 
-      Addresses: 
-        - 148.77.25.98/32
-        - 213.252.171.254/32
-        - 4.15.178.226/32
+      Addresses: !Split [ ',', !Ref JavaDocAllowedCidrs ]
       Description: External IPs only
       IPAddressVersion: IPV4 
       Name: !Sub '${ResourcePrefix}External'
