@@ -1,3 +1,4 @@
+
 # MIT License
 # 
 # Copyright (c) 2021 Martin Macecek
@@ -27,12 +28,24 @@ Description: Pipeline for Java and Maven Build
 # Parameters
 # -----------------------------------------------------------------------------
 Parameters:
-  PipelineName:
-    Description: The name of the artifact as per the maven build target. Will be used to name the Pipeline as well.
-    ConstraintDescription: Only lowercase characters allowed
+  ArtifactName:
+    Description: The name of the artifact as per the maven build target. If no pipeline name specified, this will be used to name the Pipeline as well.
+    ConstraintDescription: Must be a valid artifact name
     Type: String
     Default: javamavenbuild
-    AllowedPattern: ^$|^[a-z0-9\.-]{1,20}$
+    AllowedPattern: ^[a-zA-Z0-9\.-]{1,20}$
+  DynamicPipelineNamePrefix:
+    Description: The prefix name of the pipeline. If none provided, the value of ArtifactName is used.
+    ConstraintDescription: Must be a valid prefix
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[a-zA-Z0-9]{1}[a-zA-Z0-9\.-]{0,17}[a-zA-Z0-9]{1}$
+  PipelineName:
+    Description: The name of the pipeline. If none provided, the value of ArtifactName is used. Supersedes DynamicPipelineNamePrefix.
+    ConstraintDescription: Must be a valid pipeline name
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[A-Za-z0-9.@\-_]{1,100}$
   RepositoryName:
     Description: Name of the repository - leave empty to work with sources in S3
     ConstraintDescription: Must be a valid CodeCommit name
@@ -40,16 +53,22 @@ Parameters:
     AllowedPattern: ^$|^[\w\.-]{1,100}$
   BranchName:
     Description: Name of the branch to monitor for code changes
-    ConstraintDescription: Must be a valid GIT branch name, even CodeCommit is not used
+    ConstraintDescription: Must be a valid GIT branch name, even if CodeCommit is not used (leave default)
     Type: String
     Default: acceptance
-    AllowedPattern: ^[\w\.-]{1,100}$
-  CodeCommitRoleArn:
-    Description: ARN of a role that allows cross account access to a CodeCommit repository
-    ConstraintDescription: Must be a valid IAM ROle ARN or empty
-    Type: String
-    Default: ''
-    AllowedPattern: ^$|^arn:aws:iam::\d{12}:role\/[a-zA-Z0-9-]+$
+    AllowedPattern: ^((feature|release|bugfix|hotfix)\/)?[\w\.\-]{1,80}$
+  CodeCommitAccount:
+    Description: The CodeCommit Account Parameter
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CodeCommitAccount
+    AllowedValues:
+      - /CD/CodeCommitAccount
+  CodeCommitRegion:
+    Description: The CodeCommit Region Parameter
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CodeCommitRegion
+    AllowedValues:
+      - /CD/CodeCommitRegion
   SourceObjectKey:
     Description: 'S3 source artifact'
     Type: String
@@ -101,7 +120,14 @@ Parameters:
     Description: Target Artifact Path without filename
     Type: String
     Default: ''
-    AllowedPattern: ^$|^(\/[a-zA-Z0-9]+[a-zA-Z0-9-_]*)+$
+    AllowedPattern: ^$|^[a-zA-Z0-9]+[a-zA-Z0-9-_]*(\/[a-zA-Z0-9]+[a-zA-Z0-9-_]*)*$
+  RequireApprovalForArtifactDestination:
+    Description: Whether or not an approval is required to move the final artifact to the destination. This is useful in case the destination is a productive environment.
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
   JavaDocPublish:
     Description: Whether or not to create resources to publish javadoc for Java Maven Build. Only applicable for Global-Dev account and us-east-1 region.
     Type: String
@@ -132,18 +158,39 @@ Parameters:
     Type: String
     Default: 0.0.0.0/0
     AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))(,(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2])))*$
+  CrossAccountCodeCommitNotificationEventBusArn:
+    Description: The ARN of the EventBus for CrossAccount Code Commit Notification
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CrossAccount/CodeCommit/Notification/EventBusArn
+    AllowedValues:
+      - /CD/CrossAccount/CodeCommit/Notification/EventBusArn
+  CrossAccountCodeCommitSubscriptionEventBusArn:
+    Description: The ARN of the EventBus for CrossAccount Code Commit Subscription
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CrossAccount/CodeCommit/Subscription/EventBusArn
+    AllowedValues:
+      - /CD/CrossAccount/CodeCommit/Subscription/EventBusArn
+  CrossAccountCodeCommitSubscriptionFunctionArnParameter:
+    Description: The ARN of the Function for CrossAccount Code Commit Subscription
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
+    AllowedValues:
+      - /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
 
 # -----------------------------------------------------------------------------
 # Conditions
 # -----------------------------------------------------------------------------
 Conditions:
-  UseSourceCodeCommit: !Not [!Equals [!Ref RepositoryName, '']]
+  IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
   UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
+  UseSourceCodeCommit: !Not [!Condition UseSourceCodeS3]
   NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']
-  TargetArtifactBucketNameEmpty: !Equals [!Ref TargetArtifactBucketName, '']
+  IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
+  IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']  
+  IsTargetArtifactBucketNameEmpty: !Equals [!Ref TargetArtifactBucketName, '']
   IsPublishJavaDoc: !And [!Equals [!Ref JavaDocPublish, 'true'], !Equals [!Ref AWS::AccountId, !Ref JavaDocDefaultPublishingAccount], !Equals [!Ref AWS::Region, 'us-east-1']]
   IsScheduledExecution: !Not [!Equals [!Ref ExecutionRate, 0]]
-  IsCrossAccountCodeCommit: !Not [!Equals [!Ref CodeCommitRoleArn, '']]
+  IsApprovalRequired: !Equals [!Ref RequireApprovalForArtifactDestination, 'true']
 
 # -----------------------------------------------------------------------------
 # Resources
@@ -164,9 +211,9 @@ Resources:
             reason: "Not necessary here"
           - id: W51
             reason: "Not necessary here"
-    Condition: TargetArtifactBucketNameEmpty
+    Condition: IsTargetArtifactBucketNameEmpty
     Properties:
-      BucketName: !Sub '${ResourcePrefix}${PipelineName}-artifacts-${AWS::AccountId}-${AWS::Region}'
+      BucketName: !Sub '${ResourcePrefix}${ArtifactName}-artifacts-${AWS::AccountId}-${AWS::Region}'
       BucketEncryption:
         ServerSideEncryptionConfiguration:
         - ServerSideEncryptionByDefault:
@@ -182,14 +229,14 @@ Resources:
           Status: Enabled
   DeleteContentFromTargetArtifactBucket:
     Type: Custom::DeleteContentFromSourceBucket
-    Condition: TargetArtifactBucketNameEmpty
+    Condition: IsTargetArtifactBucketNameEmpty
     Properties:
       ServiceToken: !Ref DeleteBucketContentLambdaArn
       BucketName: !Ref TargetArtifactBucket
   CodeBuildTargetArtifactBucketAccessPolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: !Sub '${ResourcePrefix}${PipelineName}-CD-${AWS::Region}-CodeBuildTargetArtifactBucketAccessPolicy'
+      PolicyName: !Sub '${ResourcePrefix}${ArtifactName}-CD-${AWS::Region}-CodeBuildTargetArtifactBucketAccessPolicy'
       PolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -200,19 +247,19 @@ Resources:
               - s3:GetObject
               - s3:ListBucket
             Resource:
-              - !If [TargetArtifactBucketNameEmpty, !Sub '${TargetArtifactBucket.Arn}', !Sub 'arn:aws:s3:::${TargetArtifactBucketName}']
-              - !If [TargetArtifactBucketNameEmpty, !Sub '${TargetArtifactBucket.Arn}/*', !Sub 'arn:aws:s3:::${TargetArtifactBucketName}/*']
+              - !If [IsTargetArtifactBucketNameEmpty, !Sub '${TargetArtifactBucket.Arn}', !Sub 'arn:aws:s3:::${TargetArtifactBucketName}']
+              - !If [IsTargetArtifactBucketNameEmpty, !Sub '${TargetArtifactBucket.Arn}/*', !Sub 'arn:aws:s3:::${TargetArtifactBucketName}/*']
       Roles: 
         - !Sub '${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
   JavaMavenBuildCodeBuildProject:
     Type: AWS::CodeBuild::Project
     DependsOn: CodeBuildTargetArtifactBucketAccessPolicy
     Properties:
-      Name: !Sub '${ResourcePrefix}CodeBuild-${PipelineName}'
+      Name: !Sub '${ResourcePrefix}CodeBuild-${ArtifactName}'
       Cache:
         Type: S3
         Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
-      Description: !Sub 'Build project for ${PipelineName}'
+      Description: !Sub 'Build project for ${ArtifactName}'
       EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
       ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
       Artifacts:
@@ -233,7 +280,7 @@ Resources:
       Cache:
         Type: S3
         Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
-      Description: Build project to publish JavaDoc for Java Maven Build
+      Description: !Sub 'Build project to publish JavaDoc for ${ArtifactName}'
       EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
       ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
       Artifacts:
@@ -248,7 +295,7 @@ Resources:
             Value: !Ref JavaDocJmbBucket
           - Name: TARGET_ARTIFACT_NAME
             Type: PLAINTEXT
-            Value: !Sub '${PipelineName}.zip'
+            Value: !Sub '${ArtifactName}'
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -299,13 +346,13 @@ Resources:
         EnvironmentVariables:
           - Name: TARGET_ARTIFACT_BUCKET
             Type: PLAINTEXT
-            Value: !If [TargetArtifactBucketNameEmpty, !Ref TargetArtifactBucket, !Ref TargetArtifactBucketName]
+            Value: !If [IsTargetArtifactBucketNameEmpty, !Ref TargetArtifactBucket, !Ref TargetArtifactBucketName]
           - Name: TARGET_ARTIFACT_PATH
             Type: PLAINTEXT
             Value: !Ref TargetArtifactPath
           - Name: TARGET_ARTIFACT_NAME
             Type: PLAINTEXT
-            Value: !Sub '${PipelineName}.zip'
+            Value: !Sub '${ArtifactName}.zip'
       Source:
         Type: CODEPIPELINE
         BuildSpec: |
@@ -313,13 +360,19 @@ Resources:
           phases:
             post_build:
               commands:
-                - echo copy artifact $TARGET_ARTIFACT_NAME to s3://$TARGET_ARTIFACT_BUCKET$TARGET_ARTIFACT_PATH
-                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256
+                - echo copy artifact $TARGET_ARTIFACT_NAME to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH
+                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256
       TimeoutInMinutes: 5
   Pipeline: 
     Type: AWS::CodePipeline::Pipeline
     Properties: 
-      Name: !Ref 'PipelineName'
+      Name: !If
+        - IsPipelineNameEmpty
+        - !If 
+          - IsDynamicPipelineNamePrefixEmpty
+          - !Join ["-", [!Ref ArtifactName, !Join ["-", !Split ["/", !Ref BranchName]]]]
+          - !Join ["-", [!Ref DynamicPipelineNamePrefix, !Join ["-", !Split ["/", !Ref BranchName]]]]
+        - !Ref PipelineName
       RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineServiceRole'
       Stages: 
         - Name: Source
@@ -338,7 +391,10 @@ Resources:
                   RepositoryName: !Ref RepositoryName
                   BranchName: !Ref BranchName
                   PollForSourceChanges: false
-                RoleArn: !If [IsCrossAccountCodeCommit, !Ref CodeCommitRoleArn, !Ref AWS::NoValue]
+                RoleArn: !If 
+                  - IsSpokeAccount
+                  - !Sub 'arn:aws:iam::${CodeCommitAccount}:role/${ResourcePrefix}CrossAccountCodeCommitRole-${AWS::Region}'
+                  - !Ref AWS::NoValue
                 RunOrder: 1
               - Name: TemplateSourceS3
                 ActionTypeId: 
@@ -355,7 +411,7 @@ Resources:
                 RunOrder: 1
         - Name: Build
           Actions:
-            - Name: !Sub 'build-${PipelineName}'
+            - Name: !Sub 'build-${ArtifactName}'
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -374,8 +430,7 @@ Resources:
         - Name: Promote
           Actions:
             - !If
-              - TargetArtifactBucketNameEmpty
-              - !Ref AWS::NoValue
+              - IsApprovalRequired              
               - Name: ApproveBuildArtifactPromotion
                 ActionTypeId:
                   Category: Approval
@@ -384,8 +439,9 @@ Resources:
                   Version: '1'
                 Configuration:
                   NotificationArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}CD-CodePipeline-Approval-Topic'
-                  CustomData: !Sub 'Do you want to promote the build artifact ${PipelineName}.zip to s3://${TargetArtifactBucketName}${TargetArtifactPath}?'
+                  CustomData: !Sub 'Do you want to promote the build artifact ${ArtifactName}.zip to s3://${TargetArtifactBucketName}${TargetArtifactPath}?'
                 RunOrder: 1
+              - !Ref AWS::NoValue
             - Name: BuildArtifactPromotion
               ActionTypeId:
                 Category: Build
@@ -464,19 +520,29 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${AWS::StackName}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3-${Pipeline}'
   EventRuleOnChangeSourceCodeCommit:
     Type: AWS::Events::Rule
     Condition: UseSourceCodeCommit
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceCodeCommit'
+      EventBusName: !If 
+        - IsSpokeAccount
+        - !Ref CrossAccountCodeCommitNotificationEventBusArn
+        - 'default'
       EventPattern:
         source:
-          - aws.codecommit
+          - !If
+            - IsSpokeAccount
+            - crossaccount.codecommit
+            - aws.codecommit
         detail-type:
           - 'CodeCommit Repository State Change'
         resources:
-          - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
+          - !If
+            - IsSpokeAccount
+            - !Sub 'arn:aws:codecommit:${AWS::Region}:${CodeCommitAccount}:${RepositoryName}'
+            - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
         detail:
           event:
             - referenceCreated
@@ -488,7 +554,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${AWS::StackName}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Cc-${Pipeline}'
   EventRuleOnSchedule:
     Type: AWS::Events::Rule
     Condition: IsScheduledExecution
@@ -498,7 +564,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${AWS::StackName}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Schedule-${Pipeline}'
   EventRuleOnPipelineExecutionStateChange:
     Type: AWS::Events::Rule
     Properties:
@@ -706,28 +772,6 @@ Resources:
       FunctionName: !Sub '${ResourcePrefix}${JavaDocSubDomain}-NotificationToTeams'
       Code: 
         ZipFile: !Sub |
-          # MIT License
-          # 
-          # Copyright (c) 2021 Martin Macecek
-          # 
-          # Permission is hereby granted, free of charge, to any person obtaining a copy
-          # of this software and associated documentation files (the "Software"), to deal
-          # in the Software without restriction, including without limitation the rights
-          # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-          # copies of the Software, and to permit persons to whom the Software is
-          # furnished to do so, subject to the following conditions:
-          # 
-          # The above copyright notice and this permission notice shall be included in all
-          # copies or substantial portions of the Software.
-          # 
-          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-          # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-          # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-          # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-          # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-          # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-          # SOFTWARE.
-
           import json, os, logging
           import datetime as dt
           from urllib.request import Request, urlopen
@@ -756,8 +800,8 @@ Resources:
                   "@context": "https://schema.org/extensions",
                   "@type": "MessageCard",
                   "themeColor": "64a837",
-                  "title": "${PipelineName} JavaDoc Update Notification",
-                  "text": f"${PipelineName} JavaDoc was updated on **{dt_formatted[0]}** at **{dt_formatted[1]}** UTC",
+                  "title": "${ArtifactName} JavaDoc Update Notification",
+                  "text": f"${ArtifactName} JavaDoc was updated on **{dt_formatted[0]}** at **{dt_formatted[1]}** UTC",
                   "potentialAction" : [
                       {
                           "@type": "OpenUri",
@@ -869,3 +913,20 @@ Resources:
           AliasTarget:
             HostedZoneId: Z2FDTNDATAQYW2
             DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
+
+  # -----------------------------------------------------------------------------
+  # Cross Account CodeCommit Resources - Register this CodePipeline for notification
+  # -----------------------------------------------------------------------------
+  ExecuteConfigureCrossAccountCodeCommitFunction:
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "This is not sensitive data, and does not need to be encrypted"
+    Condition: IsSpokeAccount
+    Type: Custom::ExecuteConfigureCrossAccountCodeCommitFunction
+    Properties:
+      ServiceToken: !Ref CrossAccountCodeCommitSubscriptionFunctionArnParameter
+      EventBusArn: !Ref CrossAccountCodeCommitSubscriptionEventBusArn
+      CodeCommitArn: !Sub 'arn:aws:codecommit:${CodeCommitRegion}:${CodeCommitAccount}:${RepositoryName}'
+      DestEventBusArn: !Ref CrossAccountCodeCommitNotificationEventBusArn

@@ -49,10 +49,25 @@ Parameters:
     Default: /S3/ArtifactBucketNameId
     AllowedValues:
       - /S3/ArtifactBucketNameId
-
+  CodeCommitAccount:
+    Description: The CodeCommit Account Parameter
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CodeCommitAccount
+    AllowedValues:
+      - /CD/CodeCommitAccount  
+  ArmSupportedRegion:
+    Description: The ARM Supported Region parameter
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/IsArmSupportedRegion
+    AllowedValues:
+      - /CD/IsArmSupportedRegion
+ 
 # -----------------------------------------------------------------------------
 # Conditions
 # -----------------------------------------------------------------------------
+Conditions:
+  IsCrossAccountCodeCommit: !And [!Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
+  IsArmSupportedRegion: !Equals ['True', !Ref ArmSupportedRegion]
 
 # -----------------------------------------------------------------------------
 # Resources
@@ -107,21 +122,27 @@ Resources:
       LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}GetKmsKeyArn'
   GetKmsKeyArn:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
     DependsOn: GetKmsKeyArnLogGroup
     Properties:
       FunctionName: !Sub '${ResourcePrefix}GetKmsKeyArn'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
       Code: 
         ZipFile: |
-          # This file is part of a Werum IT Solutions GmbH project.
-          #
-          # Copyright (c)
-          # Werum IT Solutions GmbH
-          # All rights reserved.
-          #
-          # Any use of this file as part of a software system by non Copyright holders
-          # is subject to license terms.
-          #
-
           import boto3, logging
           import cfnresponse
           logger = logging.getLogger()
@@ -150,7 +171,7 @@ Resources:
                   cfnresponse.send(event, context, cfnresponse.FAILED, {}, event['LogicalResourceId'])
 
       Handler: "index.lambda_handler"
-      Runtime: python3.8
+      Runtime: python3.9
       MemorySize: 128
       Timeout: 60
       Role: !GetAtt GetKmsKeyArnLambdaRole.Arn
@@ -206,21 +227,27 @@ Resources:
       LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}GetHostedZoneId'
   GetHostedZoneId:
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
     DependsOn: GetHostedZoneIdLogGroup
     Properties:
       FunctionName: !Sub  '${ResourcePrefix}GetHostedZoneId'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
       Code: 
         ZipFile: |
-          # This file is part of a Werum IT Solutions GmbH project.
-          #
-          # Copyright (c)
-          # Werum IT Solutions GmbH
-          # All rights reserved.
-          #
-          # Any use of this file as part of a software system by non Copyright holders
-          # is subject to license terms.
-          #
-
           import boto3, logging
           import cfnresponse
           logger = logging.getLogger()
@@ -245,7 +272,7 @@ Resources:
                   cfnresponse.send(event, context, cfnresponse.FAILED, {}, event['LogicalResourceId'])
 
       Handler: "index.lambda_handler"
-      Runtime: python3.8
+      Runtime: python3.9
       MemorySize: 128
       Timeout: 60
       Role: !GetAtt GetHostedZoneIdLambdaRole.Arn
@@ -387,6 +414,14 @@ Resources:
                   - sqs:*
                   - ecs:*
                 Resource: '*'
+              - !If 
+                - IsCrossAccountCodeCommit
+                - Effect: Allow
+                  Resource:
+                    - !Sub 'arn:aws:iam::${CodeCommitAccount}:role/*'
+                    # - !Sub 'arn:aws:iam::${CodeCommitAccount}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineServiceRole'
+                  Action: sts:AssumeRole
+                - !Ref AWS::NoValue
   CodePipelineCloudFormationDeployRole:
     Type: AWS::IAM::Role
     Properties:
@@ -597,6 +632,11 @@ Resources:
                 s3:x-amz-acl: "bucket-owner-full-control"
   CloudWatchLogGroupCloudTrail:
     Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
     Properties:
       LogGroupName: !Sub '${AWS::StackName}-${AWS::Region}-CloudTrailLogs'
   IamRoleForCwLogsCloudTrail:
@@ -664,26 +704,37 @@ Resources:
                 Resource: !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:stack/*/*'
   NotifyCdTeamsLogGroup:
     Type: 'AWS::Logs::LogGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
     Properties:
       RetentionInDays: 1
       LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}CdNotificationToTeams'
   NotifyCdTeams:
     Type: AWS::Lambda::Function
     DependsOn: NotifyCdTeamsLogGroup
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
     Properties:
       FunctionName: !Sub  '${ResourcePrefix}CdNotificationToTeams'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
       Code: 
         ZipFile: |
-          # This file is part of a Werum IT Solutions GmbH project.
-          #
-          # Copyright (c)
-          # Werum IT Solutions GmbH
-          # All rights reserved.
-          #
-          # Any use of this file as part of a software system by non Copyright holders
-          # is subject to license terms.
-          #
-
           import json, os, logging, boto3, re
           import datetime as dt
           from urllib.request import Request, urlopen
@@ -798,7 +849,7 @@ Resources:
                   logger.info(f"Approval Rejection Notification suppressed")
 
       Handler: "index.lambda_handler"
-      Runtime: python3.8
+      Runtime: python3.9
       MemorySize: 128
       Timeout: 60
       Role: !GetAtt NotifyCdTeamsLambdaRole.Arn
@@ -807,25 +858,37 @@ Resources:
           HookUrl: !Sub '${WebHookUrl}'
   ApprovalCdTeamsLogGroup:
     Type: 'AWS::Logs::LogGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
     Properties:
       RetentionInDays: 1
       LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}CdApprovalToTeams'
   ApprovalCdTeams:
     Type: AWS::Lambda::Function
     DependsOn: ApprovalCdTeamsLogGroup
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
     Properties:
       FunctionName: !Sub  '${ResourcePrefix}CdApprovalToTeams'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
       Code: 
         ZipFile: |
-          # This file is part of a Werum IT Solutions GmbH project.
-          #
-          # Copyright (c)
-          # Werum IT Solutions GmbH
-          # All rights reserved.
-          #
-          # Any use of this file as part of a software system by non Copyright holders
-          # is subject to license terms.
-
           import json, os, logging, boto3, re
           import datetime as dt
           from urllib.request import Request, urlopen
@@ -935,14 +998,14 @@ Resources:
                 logger.error(f"Server connection failed: {err.reason}")
 
       Handler: "index.lambda_handler"
-      Runtime: python3.8
+      Runtime: python3.9
       MemorySize: 128
       Timeout: 60
       Role: !GetAtt NotifyCdTeamsLambdaRole.Arn
       Environment:
         Variables:
           HookUrl: !Sub '${WebHookUrl}'
-          ApiUrl: !Sub 'https://${ApprovalApiGateway}.execute-api.${AWS::Region}.amazonaws.com/call'
+          ApiUrl: !Sub 'https://${ApprovalApiGateway}.execute-api.${AWS::Region}.amazonaws.com/call/pipeline/approval'
   ApprovalCdTeamsPermissions:
     Type: AWS::Lambda::Permission
     Properties: 
@@ -960,7 +1023,28 @@ Resources:
           - REGIONAL
       Name: !Sub '${ResourcePrefix}approval-api'
 
-  ApprovalApiGatewayRootMethod:
+  PipelineApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApprovalApiGateway
+      ParentId: !GetAtt ApprovalApiGateway.RootResourceId
+      PathPart: pipeline
+
+  ApprovalApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApprovalApiGateway
+      ParentId: !Ref PipelineApiGatewayResource
+      PathPart: approval
+
+  RetryApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApprovalApiGateway
+      ParentId: !Ref PipelineApiGatewayResource
+      PathPart: retry
+
+  ApprovalApiGatewayMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       AuthorizationType: NONE
@@ -969,13 +1053,13 @@ Resources:
         IntegrationHttpMethod: POST
         Type: AWS_PROXY
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PostApprovalToCd.Arn}/invocations'
-      ResourceId: !GetAtt ApprovalApiGateway.RootResourceId
+      ResourceId: !Ref ApprovalApiGatewayResource
       RestApiId: !Ref ApprovalApiGateway
 
   ApprovalApiGatewayDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
-      - ApprovalApiGatewayRootMethod
+      - ApprovalApiGatewayMethod
     Properties:
       RestApiId: !Ref ApprovalApiGateway
       StageName: call
@@ -1003,27 +1087,34 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W84
-            reason: "No critical data"
+            reason: "No critical data in logs"
     Properties:
       RetentionInDays: 1
       LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}PostApprovalToCd'
   PostApprovalToCd:
     Type: AWS::Lambda::Function
     DependsOn: PostApprovalToCdLogGroup
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
     Properties:
       FunctionName: !Sub '${ResourcePrefix}PostApprovalToCd'
       Description: Post the approval to CD
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
       Code:
         ZipFile: |
-          # This file is part of a Werum IT Solutions GmbH project.
-          #
-          # Copyright (c)
-          # Werum IT Solutions GmbH
-          # All rights reserved.
-          #
-          # Any use of this file as part of a software system by non Copyright holders
-          # is subject to license terms.
-
           import json, os, logging, botocore, boto3
           import datetime as dt
 
@@ -1105,7 +1196,7 @@ Resources:
             }
 
       Handler: "index.lambda_handler"
-      Runtime: python3.8
+      Runtime: python3.9
       MemorySize: 128
       Timeout: 60
       Role: !GetAtt NotifyCdTeamsLambdaRole.Arn
@@ -1116,4 +1207,4 @@ Resources:
       Action: lambda:InvokeFunction
       FunctionName: !GetAtt PostApprovalToCd.Arn
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApprovalApiGateway}/*/POST/
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApprovalApiGateway}/*/POST/pipeline/approval
