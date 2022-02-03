@@ -141,6 +141,13 @@ Parameters:
     Type: String
     Default: ''
     AllowedPattern: ^$|(?!.*(\.|\/)$)(^([a-zA-Z0-9]+(\/?[a-zA-Z0-9-_])*)$)
+  OverrideAcceptanceApprovalRequirement:
+    Description: Destination with Acceptance in the path always require an approval. with this parameter the need for approval can be overridden.
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
   AdditionalParameterOverrides:
     Description: Additional parameter overrides. Leave empty for no additional overrides.
     ConstraintDescription: Must be a valid parameter overrides string without curly braces and not including values for GlobalArtifactBucketNamePrefix and GlobalArtifactS3Prefix
@@ -182,14 +189,15 @@ Parameters:
 # Conditions
 # -----------------------------------------------------------------------------
 Conditions:
-  UseSourceCodeCommit: !Not [!Equals [!Ref RepositoryName, '']]
+  UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
+  UseSourceCodeCommit: !Not [!Condition UseSourceCodeS3]
   IsDefaultGlobalArtifactS3Prefix: !Equals [!Ref GlobalArtifactS3Prefix, '']
   IsAcceptance: !Or [!Equals [!Ref GlobalArtifactS3Prefix, 'Acceptance'], !Equals [!Ref GlobalArtifactS3Prefix, 'acceptance'], !Condition IsDefaultGlobalArtifactS3Prefix]
   IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
   IsScheduledExecution: !Not [!Condition IsChangeExecution]
-  IsSourceCodeCommitAndAcceptanceAndChangeExecution: !And [!Condition UseSourceCodeCommit, !Condition IsAcceptance, !Condition IsChangeExecution]
+  IsOverrideAcceptanceApprovalRequirement: !Equals [!Ref OverrideAcceptanceApprovalRequirement, 'true']
+  IsApprovalRequired: !And [!Condition UseSourceCodeCommit, !And [!Condition IsAcceptance, !Not [!Condition IsOverrideAcceptanceApprovalRequirement]], !Condition IsChangeExecution]
   IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
-  UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
   NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
   IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
   IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']  
@@ -930,7 +938,7 @@ Resources:
                 RunOrder: 1
               - !Ref AWS::NoValue
             - !If
-              - IsSourceCodeCommitAndAcceptanceAndChangeExecution
+              - IsApprovalRequired
               - Name: ApproveBuildArtifactPromotion
                 ActionTypeId:
                   Category: Approval

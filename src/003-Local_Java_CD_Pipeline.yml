@@ -121,8 +121,8 @@ Parameters:
     Type: String
     Default: ''
     AllowedPattern: ^$|^[a-zA-Z0-9]+[a-zA-Z0-9-_]*(\/[a-zA-Z0-9]+[a-zA-Z0-9-_]*)*$
-  RequireApprovalForArtifactDestination:
-    Description: Whether or not an approval is required to move the final artifact to the destination. This is useful in case the destination is a productive environment.
+  OverrideAcceptanceApprovalRequirement:
+    Description: Destination with Acceptance in the path always require an approval. with this parameter the need for approval can be overridden.
     Type: String
     Default: false
     AllowedValues:
@@ -181,16 +181,20 @@ Parameters:
 # Conditions
 # -----------------------------------------------------------------------------
 Conditions:
-  IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
   UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
-  UseSourceCodeCommit: !Not [!Condition UseSourceCodeS3]
-  NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']
+  UseSourceCodeCommit: !Not [!Condition UseSourceCodeS3]  
+  IsDefaultTargetArtifactPath: !Equals [!Ref TargetArtifactPath, '']
+  IsAcceptance: !Or [!Equals [!Select [0, !Split ["/", !Ref TargetArtifactPath]], 'Acceptance'], !Equals [!Select [0, !Split ["/", !Ref TargetArtifactPath]], 'acceptance'], !Condition IsDefaultTargetArtifactPath]
+  IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
+  IsScheduledExecution: !Not [!Condition IsChangeExecution]
+  IsOverrideAcceptanceApprovalRequirement: !Equals [!Ref OverrideAcceptanceApprovalRequirement, 'true']
+  IsApprovalRequired: !And [!Condition UseSourceCodeCommit, !And [!Condition IsAcceptance, !Not [!Condition IsOverrideAcceptanceApprovalRequirement]], !Condition IsChangeExecution]
+  IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
+  NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
   IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
   IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']  
   IsTargetArtifactBucketNameEmpty: !Equals [!Ref TargetArtifactBucketName, '']
   IsPublishJavaDoc: !And [!Equals [!Ref JavaDocPublish, 'true'], !Equals [!Ref AWS::AccountId, !Ref JavaDocDefaultPublishingAccount], !Equals [!Ref AWS::Region, 'us-east-1']]
-  IsScheduledExecution: !Not [!Equals [!Ref ExecutionRate, 0]]
-  IsApprovalRequired: !Equals [!Ref RequireApprovalForArtifactDestination, 'true']
 
 # -----------------------------------------------------------------------------
 # Resources
