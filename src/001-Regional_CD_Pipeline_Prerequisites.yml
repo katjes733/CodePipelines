@@ -332,6 +332,43 @@ Resources:
       MemorySize: 128
       Timeout: 600
       Role: !GetAtt DeleteBucketContentRole.Arn
+  StateMachineRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Not relevant, because it can be replaced at any time"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}StateMachineRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+      ManagedPolicyArns: []
+  StateMachineRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: "The action cloudwatch:PutMetricData only supports all resources"
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}StateMachineRolePolicy-${AWS::Region}'
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+        Version: 2012-10-17      
+      Roles:
+        - !Ref StateMachineRole
   
   # -----------------------------------------------------------------------------
   # Cross Account CodeCommit Resources - Only for account with CodeCommit
@@ -1079,6 +1116,13 @@ Resources:
       Type: String
       Value: !If [IsArmSupportedRegion, 'True', 'False']
       Description: Indicates if ARM Architecture for Lambda function is supported in this region
+  StateMachineRoleArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/StateMachineRole/Arn'
+      Type: String
+      Value: !GetAtt StateMachineRole.Arn
+      Description: The ARN of the StateMachine Role
 
   # -----------------------------------------------------------------------------
   # Parameters used by other templates - spoke accounts (not conditional)

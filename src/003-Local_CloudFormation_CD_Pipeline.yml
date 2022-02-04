@@ -22,6 +22,7 @@
 
 AWSTemplateFormatVersion: 2010-09-09
 Description: Pipeline for CD
+Transform: AWS::Serverless-2016-10-31
 
 # -----------------------------------------------------------------------------
 # Parameters
@@ -166,6 +167,13 @@ Parameters:
     Type: String
     Default: 'latest'
     AllowedPattern: latest|\d+\.\d+\.\d+
+  SleepTimeAfterDeployment:
+    Description: Sleep time in seconds after deployment and other actions (up to 43200s (12h) allowed)
+    ConstraintDescription: Must be a valid sleep time in seconds with 0 meaning no sleep time at all
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 43200
   CrossAccountCodeCommitNotificationEventBusArn:
     Description: The ARN of the EventBus for CrossAccount Code Commit Notification
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -184,6 +192,12 @@ Parameters:
     Default: /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
     AllowedValues:
       - /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
+  StateMachineRoleArnParameter:
+    Description: The ARN of the StateMachine Role
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/StateMachineRole/Arn
+    AllowedValues:
+      - /CD/StateMachineRole/Arn
 
 # -----------------------------------------------------------------------------
 # Conditions
@@ -201,6 +215,7 @@ Conditions:
   NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
   IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
   IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']
+  IsSleepAfterDeployment: !Not [!Equals [!Ref SleepTimeAfterDeployment, 0]]
   UsEast1:       !Or [!Equals [!Ref DeploymentRegions, 'us-east-1'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-east-1']],    !Equals [!Ref DeploymentRegions, 'Development']]
   UsWest2:       !Or [!Equals [!Ref DeploymentRegions, 'us-west-2'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-west-2']]]
   EuCentral1:    !Or [!Equals [!Ref DeploymentRegions, 'eu-central-1'],   !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'eu-central-1']], !Equals [!Ref DeploymentRegions, 'Development']]
@@ -845,6 +860,29 @@ Resources:
               discard-paths: yes
           - Function: !FindInMap [ Code, Python, GetParametersFromTempate ]
       TimeoutInMinutes: 5
+  SleepAfterDeploymentStateMachine:
+    Type: 'AWS::StepFunctions::StateMachine'
+    Condition: IsSleepAfterDeployment
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E2532
+    Properties:
+      DefinitionString: |-
+        {
+          "StartAt": "Wait",
+          "States": {
+            "Wait": {
+              "Type": "Wait",
+              "Seconds": ${seconds},
+              "End": true
+            }
+          }
+        }
+      RoleArn: !Ref StateMachineRoleArnParameter
+      DefinitionSubstitutions:
+        seconds: !Ref SleepTimeAfterDeployment
   Pipeline: 
     Type: AWS::CodePipeline::Pipeline
     Metadata:
@@ -957,7 +995,7 @@ Resources:
               OutputArtifacts:
                 - Name: GlobalSource
               RunOrder: 3
-        - Name: TestStage
+        - Name: TestDeploy
           Actions:
             - !If
               - UsEast1
@@ -1170,6 +1208,22 @@ Resources:
                 RunOrder: 1
               - !Ref AWS::NoValue
             - !If
+              - IsSleepAfterDeployment
+              - Name: SleepAfterDeploy
+                ActionTypeId:
+                  Category: Invoke
+                  Owner: AWS
+                  Provider: StepFunctions
+                  Version: "1"
+                Configuration:
+                  StateMachineArn: !Ref SleepAfterDeploymentStateMachine
+                InputArtifacts:
+                  - Name: GlobalSource
+                RunOrder: 2
+              - !Ref AWS::NoValue
+        - Name: TestUndeploy
+          Actions:  
+            - !If
               - UsEast1
               - Name: DeleteTestStackUsEast1
                 ActionTypeId:
@@ -1182,7 +1236,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: us-east-1
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - UsWest2
@@ -1197,7 +1251,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: us-west-2
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - EuCentral1
@@ -1212,7 +1266,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: eu-central-1
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - EuWest1
@@ -1227,7 +1281,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: eu-west-1
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - ApNortheast1
@@ -1242,7 +1296,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: ap-northeast-1
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - ApNortheast2
@@ -1257,7 +1311,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: ap-northeast-2
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - ApSoutheast1
@@ -1272,7 +1326,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: ap-southeast-1
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - ApSoutheast2
@@ -1287,7 +1341,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: ap-southeast-2
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - EuWest2
@@ -1302,7 +1356,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: eu-west-2
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
             - !If
               - ApSouth1
@@ -1317,7 +1371,7 @@ Resources:
                   RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineCfnDeployRole'
                   StackName: !Ref TestStackName
                 Region: ap-south-1
-                RunOrder: 2
+                RunOrder: 1
               - !Ref AWS::NoValue
       ArtifactStores:
         - !If
