@@ -154,18 +154,18 @@ Parameters:
     Type: String
     Default: ''
     AllowedPattern: ^$|\"[a-zA-Z0-9]+\"\:\s*\"[\w\- \@\.]*\"(,\s*\"[a-zA-Z0-9]+\"\:\s*\"[\w\- \@\.]*\")*$
-  CfnLintVersionOverride:
-    Description: cfn-lint version to use for template verification. If non is provided the default (0.56.2) is used.
+  CfnLintVersion:
+    Description: cfn-lint version to use for template verification. Specify latest for the latest version or a specific version number.
     ConstraintDescription: Must be a valid cfn-lint version or empty
     Type: String
-    Default: ''
-    AllowedPattern: ^$|\d+\.\d+\.\d+
-  CfnNagVersionOverride:
-    Description: cfn-nag version to use for template verification. If non is provided the default (0.7.5) is used.
+    Default: 'latest'
+    AllowedPattern: latest|\d+\.\d+\.\d+
+  CfnNagVersion:
+    Description: cfn-nag version to use for template verification. Specify latest for the latest version or a specific version number.
     ConstraintDescription: Must be a valid cfn-nag version or empty
     Type: String
-    Default: ''
-    AllowedPattern: ^$|\d+\.\d+\.\d+
+    Default: 'latest'
+    AllowedPattern: latest|\d+\.\d+\.\d+
   CrossAccountCodeCommitNotificationEventBusArn:
     Description: The ARN of the EventBus for CrossAccount Code Commit Notification
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -200,9 +200,7 @@ Conditions:
   IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
   NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
   IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
-  IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']  
-  IsCfnLintVersionOverride: !Not [!Equals [!Ref CfnLintVersionOverride, '']]
-  IsCfnNagVersionOverride: !Not [!Equals [!Ref CfnNagVersionOverride, '']]
+  IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']
   UsEast1:       !Or [!Equals [!Ref DeploymentRegions, 'us-east-1'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-east-1']],    !Equals [!Ref DeploymentRegions, 'Development']]
   UsWest2:       !Or [!Equals [!Ref DeploymentRegions, 'us-west-2'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-west-2']]]
   EuCentral1:    !Or [!Equals [!Ref DeploymentRegions, 'eu-central-1'],   !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'eu-central-1']], !Equals [!Ref DeploymentRegions, 'Development']]
@@ -458,11 +456,6 @@ Mappings:
               except Exception as error:
                   print("Error {}".format(error))
                   raise
-  Tools:
-    cfn-nag:
-      Version: "0.7.5"
-    cfn-lint:
-      Version: "0.56.2"
 
 # -----------------------------------------------------------------------------
 # Resources
@@ -695,9 +688,9 @@ Resources:
                   ruby: 2.7
                   python: 3.9
                 commands:
-                  - gem install cfn-nag -v ${CfnNagVersion}
-                  - if [[ "${CfnLintVersion}" < "0.51.0" ]]; then pip uninstall networkx --yes; pip install networkx==2.5.1 --quiet; fi                  
-                  - pip install cfn-lint==${CfnLintVersion}
+                  - if [[ "${CfnNagVersion}" = "latest" ]]; then gem install cfn-nag; else gem install cfn-nag -v ${CfnNagVersion}; fi
+                  - if [[ "${CfnLintVersion}" = "latest" ]] || [[ "${CfnLintVersion}" < "0.51.0" ]]; then pip uninstall networkx --yes; pip install networkx==2.5.1 --quiet; fi                  
+                  - if [[ "${CfnLintVersion}" = "latest" ]]; then pip install cfn-lint; else pip install cfn-lint==${CfnLintVersion}; fi
               pre_build:
                 commands: |
                   cat <<EOT >> script.py
@@ -727,9 +720,7 @@ Resources:
                   - cfn_lint_result.xml
                 discard-paths: 'yes'
                 file-format: 'JUNITXML'             
-          - CfnNagVersion: !If [ IsCfnNagVersionOverride, !Ref CfnNagVersionOverride, !FindInMap [ Tools, cfn-nag, Version ]]
-            CfnLintVersion: !If [ IsCfnLintVersionOverride, !Ref CfnLintVersionOverride, !FindInMap [ Tools, cfn-lint, Version ]]
-            Function: !FindInMap [ Code, Python, GetJunitTestReportFromReport ] 
+          - Function: !FindInMap [ Code, Python, GetJunitTestReportFromReport ] 
       TimeoutInMinutes: 5
   PrepareSourcesCcCodeBuildProject:
     Condition: UseSourceCodeCommit
