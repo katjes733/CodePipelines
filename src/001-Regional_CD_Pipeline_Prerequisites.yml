@@ -1,0 +1,1121 @@
+# MIT License
+# 
+# Copyright (c) 2021 Martin Macecek
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Regional prerequisites for CD Pipeline
+
+# -----------------------------------------------------------------------------
+# Parameters
+# -----------------------------------------------------------------------------
+Parameters:
+  ResourcePrefix:
+    Description: The prefix for all resources
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[a-z0-9-]{0,7}$
+  ArtifactBucketName:
+    Description: Artifact Bucket Name
+    Type: String
+    Default: cd-cp-artifacts
+  CodeCommitAccount:
+    Description: Account number of the CodeCommit account
+    ConstraintDescription: Must be a valid Account number or empty
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|\d{12}$
+  CodeCommitRegion:
+    Description: Region of the CodeCommit
+    ConstraintDescription: Must be a valid region or empty
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|[a-z]{2}-(gov-){0,1}(north|northeast|east|southeast|south|southwest|west|northwest|central)-[1-9]{1}
+  PrincipleOrgId:
+    Description: Principle Organizational ID for cross account access scenarios
+    ConstraintDescription: Must be a valid Principle Organizational ID or empty
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^o-[a-z0-9]{10}|r-[a-z0-9]{4}|ou-[a-z0-9]{4}-[a-z0-9]{8}$
+  CrossAccountCodeCommitConfigTableName:
+    Description: Name of table for Cross Account CodeCommit Configuration without resource prefix
+    ConstraintDescription: Must be a valid table namewithout resource prefix
+    Type: String
+    Default: 'CrossAccountCodeCommitConfiguration'
+    AllowedPattern: ^[a-zA-Z0-9_.-]{3,248}$
+  CrossAccountCodeCommitNotificationEventBusName:
+    Description: Name of the EventBus for Cross Account CodeCommit Notification without resource prefix
+    ConstraintDescription: Must be a valid EventBus name without resource prefix
+    Type: String
+    Default: 'CrossAccountCodeCommitConfiguration'
+    AllowedPattern: ^[/\.\-_A-Za-z0-9]{1,248}$
+  CrossAccountCodeCommitSubscriptionEventBusName:
+    Description: Name of the EventBus for Cross Account CodeCommit Subscription without resource prefix
+    ConstraintDescription: Must be a valid EventBus name without resource prefix
+    Type: String
+    Default: 'CrossAccountCodeCommitSubscription'
+    AllowedPattern: ^[/\.\-_A-Za-z0-9]{1,248}$
+
+# -----------------------------------------------------------------------------
+# Conditions
+# -----------------------------------------------------------------------------
+Conditions:
+  IsSpokeAccount: !And [!Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
+  IsSpokeAccountDefaultRegion: !And [!Condition IsSpokeAccount, !Equals [!Ref CodeCommitRegion, '']]
+  IsCodeCommitAccount: !Or [!Equals [!Ref CodeCommitAccount, ''], !Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]
+  IsCurrentAccountOnly: !Equals [!Ref PrincipleOrgId, '']
+  IsPrincipleOrgId: !Not [!Condition IsCurrentAccountOnly]
+  IsArmSupportedRegion: !Or [!Equals ['us-east-1', !Ref AWS::Region], !Equals ['us-west-2', !Ref AWS::Region], !Equals ['eu-central-1', !Ref AWS::Region], !Equals ['eu-west-1', !Ref AWS::Region], !Equals ['ap-south-1', !Ref AWS::Region], !Equals ['ap-southeast-1', !Ref AWS::Region], !Equals ['ap-southeast-2', !Ref AWS::Region], !Equals ['ap-northeast-1', !Ref AWS::Region]]
+
+# -----------------------------------------------------------------------------
+# Resources
+# -----------------------------------------------------------------------------
+Resources:
+  CodePipelineArtifactStoreKmsKey:
+    Type: AWS::KMS::Key
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F76
+            reason: "False Positive - because we are using a Condition"
+    Properties:
+      Description: Used by Assumed Roles in Dev/Test/Prod accounts to Encrypt/Decrypt code
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: !Ref AWS::StackName
+        Statement:
+          - Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of key in lambda
+            Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com] 
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+          - !If
+            - IsCurrentAccountOnly
+            - Sid: !Sub  "Allow use of the key for ${AWS::AccountId}"
+              Effect: "Allow"
+              Principal: 
+                AWS: "*"
+              Action: 
+                - "kms:Encrypt"
+                - "kms:Decrypt"
+                - "kms:ReEncrypt*"
+                - "kms:GenerateDataKey*"
+                - "kms:DescribeKey"
+              Resource: "*"
+              Condition:
+                StringLike:
+                  kms:CallerAccount: !Sub ${AWS::AccountId}
+            - !Ref AWS::NoValue
+          - !If
+            - IsPrincipleOrgId
+            - Sid: "Allow use of the keys in the specified Org Path"
+              Effect: "Allow"
+              Principal: 
+                AWS: "*"
+              Action: 
+                - "kms:Encrypt"
+                - "kms:Decrypt"
+                - "kms:ReEncrypt*"
+                - "kms:GenerateDataKey*"
+                - "kms:DescribeKey"
+              Resource: "*"
+              Condition:
+                ForAnyValue:StringLike:
+                  aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+            - !Ref AWS::NoValue
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ResourcePrefix}${ArtifactBucketName}-${AWS::AccountId}-${AWS::Region}'
+      TargetKeyId: !Ref CodePipelineArtifactStoreKmsKey
+  CodePipelineArtifactStoreBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "No access logging necessary"
+    DependsOn: DeleteBucketContent
+    Properties:
+      BucketName: !Sub '${ResourcePrefix}${ArtifactBucketName}-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+            KMSMasterKeyID: !GetAtt [CodePipelineArtifactStoreKmsKey,Arn]
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+        - Id: Put everything into STANDARD_IA after 90 days
+          Transitions:
+          - StorageClass: STANDARD_IA
+            TransitionInDays: 90
+          Status: Enabled  
+  DeleteContentFromCodePipelineArtifactStoreBucket:  
+    Type: Custom::DeleteContentFromCodePipelineArtifactStoreBucket
+    Properties:
+      ServiceToken: !Sub '${DeleteBucketContent.Arn}'
+      BucketName: !Ref CodePipelineArtifactStoreBucket
+  CodePipelineArtifactStoreBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CodePipelineArtifactStoreBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
+            Condition:
+              StringNotEquals: 
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - !If 
+            - IsSpokeAccount
+            - Sid: AlloweAccessFromCodeCommitAccount
+              Effect: Allow
+              Principal: 
+                AWS: !Ref CodeCommitAccount
+              Action: 
+                - 's3:Get*'
+                - 's3:Put*'
+              Resource: !Sub '${CodePipelineArtifactStoreBucket.Arn}/*'
+            - !Ref AWS::NoValue
+          - !If 
+            - IsSpokeAccount
+            - Sid: AlloweListFromCodeCommitAccount
+              Effect: Allow
+              Principal: 
+                AWS: !Ref CodeCommitAccount
+              Action: 
+                - 's3:ListBucket'
+              Resource: !Sub '${CodePipelineArtifactStoreBucket.Arn}'
+            - !Ref AWS::NoValue
+  DeleteBucketContentRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Replacement not necessary"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}DeleteBucketContent-Role-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${ResourcePrefix}DeleteBucketContent-Policy-${AWS::Region}'
+          PolicyDocument:
+            Id: !Sub '${ResourcePrefix}DeleteBucketContent-PolicyDocument-${AWS::Region}'
+            Version: 2012-10-17
+            Statement:
+              - Sid: Logging
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+              - Sid: AllowS3Delete
+                Effect: Allow
+                Action:
+                  - 's3:Delete*'
+                  - 's3:Get*'
+                  - 's3:List*'
+                Resource:
+                  - 'arn:aws:s3:::*'
+                  - 'arn:aws:s3:::*/*'
+  DeleteBucketContentLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}DeleteBucketContent'
+  DeleteBucketContent:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
+    DependsOn: DeleteBucketContentLogGroup
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}DeleteBucketContent'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
+      Code: 
+        ZipFile: |
+          import json, boto3, logging, time
+          import cfnresponse
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info("event: {}".format(event))
+              try:
+                  bucket = event['ResourceProperties']['BucketName']
+                  logger.info("bucket: {}, event['RequestType']: {}".format(bucket,event['RequestType']))
+                  if event['RequestType'] == 'Delete':
+                      s3 = boto3.resource('s3')
+                      bucket = s3.Bucket(bucket)
+                      time.sleep(60)
+                      bucket.objects.all().delete()
+                      bucket.object_versions.all().delete()
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, event['LogicalResourceId'])
+              except Exception as e:
+                  logger.info("Exception: {}".format(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, event['LogicalResourceId'])
+
+      Handler: "index.lambda_handler"
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 600
+      Role: !GetAtt DeleteBucketContentRole.Arn
+  
+  # -----------------------------------------------------------------------------
+  # Cross Account CodeCommit Resources - Only for account with CodeCommit
+  # -----------------------------------------------------------------------------
+  CrossAccountCodeCommitRole:
+    Type: 'AWS::IAM::Role'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Replacement not necessary"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}CrossAccountCodeCommitRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              AWS: '*'
+            Condition:
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AWSCodeCommitFullAccess'
+  CrossAccountCodeCommitRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: '* needed, actions do not support resource level permissions'
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}CrossAccountCodeCommitRolePolicy-${AWS::Region}'      
+      PolicyDocument:   
+        Version: 2012-10-17     
+        Statement:
+          - Action:
+              - 's3:GetObject*'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:s3:::${ResourcePrefix}${ArtifactBucketName}-*/*'
+            Condition:
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+          - Action:
+              - 'codecommit:ListBranches'
+            Effect: Allow
+            Resource: 'arn:aws:codecommit:*'
+            Condition:
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+          - Action:
+              - 'codecommit:ListRepositories'
+            Effect: Allow
+            Resource: '*'
+            Condition:
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+          - Action:
+              - 'kms:DescribeKey'
+              - 'kms:GenerateDataKey*'
+              - 'kms:Encrypt'
+              - 'kms:ReEncrypt'
+              - 'kms:Decrypt'
+            Effect: Allow
+            Resource:
+              - 'arn:aws:kms:*'      
+            Condition:
+              ForAnyValue:StringLike:
+                aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+      Roles:
+        - !Ref CrossAccountCodeCommitRole
+
+  CrossAccountCodeCommitEventDeliveryRole:
+    Type: 'AWS::IAM::Role'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Replacement not necessary"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}CodeCommitEventDeliveryRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  CodeCommitEventDeliveryRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: '* needed, actions do not support resource level permissions'
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}CodeCommitEventDeliveryRolePolicy-${AWS::Region}'
+      PolicyDocument:        
+        Statement:    
+          - Action:
+              - 'events:PutEvents'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:events:${AWS::Region}:*:event-bus/*'
+          - Action:              
+              - 'dynamodb:GetItem'
+            Effect: Allow
+            Resource: !GetAtt CrossAccountCodeCommitConfigTable.Arn
+        Version: 2012-10-17      
+      Roles:
+        - !Ref CrossAccountCodeCommitEventDeliveryRole
+  CrossAccountCodeCommitEventDeliveryLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}CrossAccountCodeCommitEventDelivery'
+  CrossAccountCodeCommitEventDeliveryFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "Provided by managed policy AWSLambdaBasicExecutionRole in CrossAccountCodeCommitEventDeliveryRole"
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
+    DependsOn: 
+      - CrossAccountCodeCommitEventDeliveryLogGroup
+      - CrossAccountCodeCommitRolePolicy
+    Properties: 
+      FunctionName: !Sub '${ResourcePrefix}CrossAccountCodeCommitEventDelivery'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
+      Code: 
+        ZipFile: |          
+          import json, boto3, botocore, logging, os
+          import datetime as dt
+
+          levels = {
+              'critical': logging.CRITICAL,
+              'error': logging.ERROR,
+              'warn': logging.WARNING,
+              'info': logging.INFO,
+              'debug': logging.DEBUG
+          }
+          logger = logging.getLogger()
+          try:   
+              logger.setLevel(levels.get(os.getenv('LOG_LEVEL', 'info').lower()))
+          except KeyError as e:
+              logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info(f"event: {event}")
+              eventPrefix = os.getenv('EVENT_PREFIX', 'custom')
+              sourceSuffix = event['source'].replace("aws", "")
+              repoArns = event['resources']
+              for repoArn in event['resources']:
+                  processedEventBusArns = set()
+                  for eventBusArn in getDestinationConfiguration(repoArn):
+                      if eventBusArn not in processedEventBusArns:
+                          newEvent = {
+                              'Time': dt.datetime.fromisoformat(event['time'][:-1]),
+                              'Source': f'{eventPrefix}{sourceSuffix}',
+                              'Resources': [repoArn],
+                              'DetailType': event['detail-type'],
+                              'Detail': json.dumps(event['detail']),
+                              'EventBusName': eventBusArn
+                          }
+                          logger.debug(f"Event entries to be sent: {newEvent}")
+                          ebClient = boto3.client('events')
+                          try:
+                              ebClient.put_events(Entries = [newEvent])
+                              logger.info(f"Event successfully forwarded to event bus: {eventBusArn}")
+                              processedEventBusArns.add(eventBusArn)
+                          except botocore.exceptions.ClientError as error:
+                              if error.response['Error']['Code'] == 'AccessDeniedException':
+                                  logger.error(f"Account {account} does not allow writing to the following event bus: {eventBusArn}")
+                              else:
+                                  raise error
+                      else:
+                          logger.info(f"Event was already successfully forwarded to event bus {eventBusArn} before and is therefore skipped.")
+
+          def getDestinationConfiguration(repoArn):
+              dynamoDb = boto3.resource('dynamodb')
+              tableName = os.getenv('TABLE_NAME')
+              table = dynamoDb.Table(tableName)
+              response = table.get_item(Key = {'RepositoryArn': repoArn})
+              returnValue = []
+              if 'Item' in response:
+                  returnValue = response['Item']['Destinations']
+              return returnValue
+
+      Description: CodeCommit cross account event delivery function
+      Handler: "index.lambda_handler"
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt CrossAccountCodeCommitEventDeliveryRole.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: info
+          EVENT_PREFIX: crossaccount
+          TABLE_NAME: !Ref CrossAccountCodeCommitConfigTable
+  CrossAccountCodeCommitEventDeliveryPermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsCodeCommitAccount
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CrossAccountCodeCommitEventDeliveryFunction.Arn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CrossAccountCodeCommitEventRule.Arn
+  CrossAccountCodeCommitEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsCodeCommitAccount
+    Properties:
+      Name: !Sub '${ResourcePrefix}CrossAccountCodeCommit'
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - prefix: !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+      Targets:
+        - Arn: !GetAtt CrossAccountCodeCommitEventDeliveryFunction.Arn      
+          Id: !Sub '${ResourcePrefix}CrossAccountCodeCommitEventDeliveryFunction'  
+  CrossAccountCodeCommitConfigTableKmsKey:
+    Type: AWS::KMS::Key  
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F76
+            reason: "False Positive - because we are using a Condition"
+    Condition: IsCodeCommitAccount
+    Properties:
+      Description: Used to encrypt CrossAccount Code Commit Configuration table
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: !Ref AWS::StackName
+        Statement:
+          - Sid: Allows admin of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of key in lambda
+            Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey,
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              StringLike:
+                kms:ViaService: "dynamodb.*.amazonaws.com"
+  CrossAccountCodeCommitConfigTableKmsAlias:
+    Type: AWS::KMS::Alias
+    Condition: IsCodeCommitAccount
+    Properties:
+      AliasName: !Sub 'alias/${ResourcePrefix}CrossAccountCodeCommitConfigTable-${AWS::Region}'
+      TargetKeyId: !Ref CrossAccountCodeCommitConfigTableKmsKey
+  CrossAccountCodeCommitConfigTable: 
+    Type: AWS::DynamoDB::Table
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Replacement not necessary"
+    Condition: IsCodeCommitAccount
+    Properties: 
+      AttributeDefinitions: 
+        - AttributeName: "RepositoryArn"
+          AttributeType: "S"
+      KeySchema: 
+        - AttributeName: "RepositoryArn"
+          KeyType: "HASH"
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      TableName: !Ref CrossAccountCodeCommitConfigTableName
+      PointInTimeRecoverySpecification:
+         PointInTimeRecoveryEnabled: true
+      # TODO: Enable when refactoring of templates was successful
+      # SSESpecification:
+      #   KMSMasterKeyId: !Ref CrossAccountCodeCommitConfigTableKmsKey
+      #   SSEEnabled: true
+      #   SSEType: KMS
+  # Create Event Bus for all cross account related events
+  CrossAccountCodeCommitSubscriptionEventBus: 
+    Type: AWS::Events::EventBus
+    Condition: IsCodeCommitAccount
+    Properties: 
+        Name: !Sub '${ResourcePrefix}${CrossAccountCodeCommitSubscriptionEventBusName}'  
+  CrossAccountCodeCommitEventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Condition: IsCodeCommitAccount
+    Properties: 
+      EventBusName: !GetAtt CrossAccountCodeCommitSubscriptionEventBus.Name
+      StatementId: !Sub '${ResourcePrefix}CrossAccountCodeCommitSubscriptionEventBus'
+      Statement: 
+        Effect: 'Allow'
+        Principal: '*'
+        Action: 'events:PutEvents'
+        Resource: !GetAtt CrossAccountCodeCommitSubscriptionEventBus.Arn
+        Condition:
+          ForAnyValue:StringLike:
+            aws:PrincipalOrgPaths: !Sub '*/${PrincipleOrgId}/*'
+  CrossAccountCodeCommitConfigRole:
+    Type: 'AWS::IAM::Role'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Replacement not necessary"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}CrossAccountCodeCommitConfigRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  CrossAccountCodeCommitConfigRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: '* needed, actions do not support resource level permissions'
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}CrossAccountCodeCommitConfigRolePolicy-${AWS::Region}'
+      PolicyDocument:        
+        Statement:    
+          - Action:
+              - 'dynamodb:BatchGetItem'
+              - 'dynamodb:GetItem'
+              - 'dynamodb:Query'
+              - 'dynamodb:Scan'
+              - 'dynamodb:BatchWriteItem'
+              - 'dynamodb:PutItem'
+              - 'dynamodb:UpdateItem'
+            Effect: Allow
+            Resource: !GetAtt CrossAccountCodeCommitConfigTable.Arn
+        Version: 2012-10-17      
+      Roles:
+        - !Ref CrossAccountCodeCommitConfigRole
+  CrossAccountCodeCommitConfigLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}CrossAccountCodeCommitConfig'
+  CrossAccountCodeCommitConfigFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsCodeCommitAccount
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "Provided by managed policy AWSLambdaBasicExecutionRole in CrossAccountCodeCommitConfigRole"
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
+    DependsOn: 
+      - CrossAccountCodeCommitConfigLogGroup
+      - CrossAccountCodeCommitConfigRolePolicy
+    Properties: 
+      FunctionName: !Sub '${ResourcePrefix}CrossAccountCodeCommitConfig'
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
+      Code: 
+        ZipFile: |          
+          import boto3, logging, os
+
+          levels = {
+              'critical': logging.CRITICAL,
+              'error': logging.ERROR,
+              'warn': logging.WARNING,
+              'info': logging.INFO,
+              'debug': logging.DEBUG
+          }
+          logger = logging.getLogger()
+          try:   
+              logger.setLevel(levels.get(os.getenv('LOG_LEVEL', 'info').lower()))
+          except KeyError as e:
+              logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info(f"event: {event}")
+              dynamoDb = boto3.resource('dynamodb')
+              tableName = os.getenv('TABLE_NAME')
+              action = event['detail']['action']
+              repoArn = event['detail']['repositoryArn']
+              eventBusArn = event['detail']['eventBusArn']
+              table = dynamoDb.Table(tableName)
+              
+              if action == "Update":
+                  oldRepoArn = event['detail']['oldRepositoryArn']
+                  oldEventBusArn = event['detail']['oldEventBusArn']
+                  oldResponse = table.get_item(Key = {'RepositoryArn': oldRepoArn})
+                  if 'Item' in oldResponse:
+                      logger.info(f"{action}: Existing item found in table {tableName} with RepositoryArn={oldRepoArn}.")
+                      config = oldResponse['Item']
+                      destinations = config['Destinations']
+                      if oldEventBusArn in destinations:
+                          logger.info(f"{action}: Destination {oldEventBusArn} exists {destinations.count(oldEventBusArn)}-times and therefore one element is removed.")
+                          destinations.remove(oldEventBusArn)
+                          response = table.put_item(Item = config)
+              
+              response = table.get_item(Key = {'RepositoryArn': repoArn})
+              config = None
+              if 'Item' in response:
+                  logger.info(f"{action}: Existing item found in table {tableName} with RepositoryArn={repoArn}.")
+                  config = response['Item']
+                  destinations = config['Destinations']
+                  if action == "Delete":
+                      if eventBusArn in destinations:
+                          logger.info(f"{action}: Destination {eventBusArn} exists {destinations.count(eventBusArn)}-times and therefore one element is removed.")
+                          destinations.remove(eventBusArn)
+                  else:
+                      if eventBusArn not in destinations:
+                          logger.info(f"{action}: New destination {eventBusArn} does not yet exist and is therefore added as first element.")
+                      else:
+                          logger.info(f"{action}: New destination {eventBusArn} exists and is therefore added as additional element.")
+                      destinations.append(eventBusArn)
+              else:
+                  if action != "Delete":
+                      logger.info(f"{action}: No item found in table {tableName} with RepositoryArn={repoArn}. Creating new item with destination {eventBusArn}.")
+                      config = {
+                          "RepositoryArn": repoArn,
+                          "Destinations": [eventBusArn]
+                      }
+              if config is not None:
+                  response = table.put_item(Item = config)
+
+      Description: CodeCommit cross account configuration function
+      Handler: "index.lambda_handler"
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt CrossAccountCodeCommitConfigRole.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: info
+          TABLE_NAME: !Ref CrossAccountCodeCommitConfigTable
+  CrossAccountCodeCommitConfigFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Condition: IsCodeCommitAccount
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt CrossAccountCodeCommitConfigFunction.Arn
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CrossAccountCodeCommitConfigEventRule.Arn
+  # Create Event Rule reacting to custom event: invoking Lambda AddNewSpokeAccount  
+  CrossAccountCodeCommitConfigEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsCodeCommitAccount
+    Properties:
+      Name: !Sub '${ResourcePrefix}CrossAccountCodeCommitConfigEventRule'
+      EventBusName: !GetAtt CrossAccountCodeCommitSubscriptionEventBus.Arn
+      EventPattern:
+        source:
+          - crossaccount.codecommit
+        detail-type:
+          - 'Destination Configuration'
+      Targets:
+        - Arn: !GetAtt CrossAccountCodeCommitConfigFunction.Arn
+          Id: !Sub '${ResourcePrefix}CrossAccountCodeCommitConfigFunction'  
+
+  # -----------------------------------------------------------------------------
+  # Cross Account CodeCommit Resources - Spoke Account
+  # -----------------------------------------------------------------------------
+  CrossAccountCodeCommitNotificationEventBus: 
+    Type: AWS::Events::EventBus
+    Condition: IsSpokeAccount
+    Properties: 
+        Name: !Sub '${ResourcePrefix}${CrossAccountCodeCommitNotificationEventBusName}'  
+  CrossAccountCodeCommitNotificationEventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Condition: IsSpokeAccount
+    Properties: 
+      EventBusName: !GetAtt CrossAccountCodeCommitNotificationEventBus.Name
+      StatementId: !Sub '${ResourcePrefix}CrossAccountCodeCommitNotification'
+      Statement: 
+        Effect: 'Allow'
+        Principal: 
+          AWS: !Ref CodeCommitAccount
+        Action: 'events:PutEvents'
+        Resource: !GetAtt CrossAccountCodeCommitNotificationEventBus.Arn
+  CrossAccountCodeCommitSubscriptionRole:
+    Type: 'AWS::IAM::Role'
+    Condition: IsSpokeAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Only in case a specific resource prefix is used"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}CrossAccountCodeCommitSubscriptionRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  CrossAccountCodeCommitSubscriptionPolicy:
+    Type: 'AWS::IAM::Policy'
+    Condition: IsSpokeAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: '* needed, actions do not support resource level permissions'
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}CrossAccountCodeCommitSubscriptionPolicy-${AWS::Region}'
+      PolicyDocument:        
+        Statement:    
+          - Action:
+              - 'events:PutEvents'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:events:${AWS::Region}:*:event-bus/*'
+        Version: 2012-10-17      
+      Roles:
+        - !Ref CrossAccountCodeCommitSubscriptionRole
+  CrossAccountCodeCommitSubscriptionLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Condition: IsSpokeAccount
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}CrossAccountCodeCommitSubscription'
+  CrossAccountCodeCommitSubscriptionFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsSpokeAccount
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "Provided by managed policy AWSLambdaBasicExecutionRole in ConfigureCrossAccountCodeCommitRole"
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
+    DependsOn: 
+      - CrossAccountCodeCommitSubscriptionLogGroup
+      - CrossAccountCodeCommitSubscriptionPolicy
+    Properties: 
+      FunctionName: !Sub '${ResourcePrefix}CrossAccountCodeCommitSubscription'
+      Architectures:  
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
+      Code: 
+        ZipFile: |          
+          import cfnresponse
+          import json, boto3, botocore, logging, os
+          from datetime import datetime as dt
+
+          levels = {
+              'critical': logging.CRITICAL,
+              'error': logging.ERROR,
+              'warn': logging.WARNING,
+              'info': logging.INFO,
+              'debug': logging.DEBUG
+          }
+          logger = logging.getLogger()
+          try:   
+              logger.setLevel(levels.get(os.getenv('LOG_LEVEL', 'info').lower()))
+          except KeyError as e:
+              logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info(f"event: {event}")
+              try:
+                  eventBusArn = event['ResourceProperties']['EventBusArn']
+                  configEvent = None
+                  if event['RequestType'] == 'Update':
+                      configEvent = {
+                          'Time': dt.now().isoformat(),
+                          'Source': 'crossaccount.codecommit',
+                          'DetailType': 'Destination Configuration',
+                          'Resources': [],
+                          'Detail': json.dumps({
+                              'action': event['RequestType'],
+                              'repositoryArn': event['ResourceProperties']['CodeCommitArn'],
+                              'eventBusArn': event['ResourceProperties']['DestEventBusArn'],
+                              'oldRepositoryArn': event['OldResourceProperties']['CodeCommitArn'],
+                              'oldEventBusArn': event['OldResourceProperties']['DestEventBusArn']
+                          }),
+                          'EventBusName': eventBusArn
+                      }
+                  else:
+                      configEvent = {
+                          'Time': dt.now().isoformat(),
+                          'Source': 'crossaccount.codecommit',
+                          'DetailType': 'Destination Configuration',
+                          'Resources': [],
+                          'Detail': json.dumps({
+                              'action': event['RequestType'],
+                              'repositoryArn': event['ResourceProperties']['CodeCommitArn'],
+                              'eventBusArn': event['ResourceProperties']['DestEventBusArn']
+                          }),
+                          'EventBusName': eventBusArn
+                      } 
+
+                  logger.debug(f"Configuration Event to be sent: {configEvent}")
+                  ebClient = boto3.client('events')
+                  try:
+                      ebClient.put_events(Entries = [configEvent])
+                      logger.info(f"Event successfully sent to event bus: {eventBusArn}")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, event['LogicalResourceId'])
+                  except botocore.exceptions.ClientError as error:
+                      if error.response['Error']['Code'] == 'AccessDeniedException':
+                          logger.error(f"Account {account} does not allow writing to the following event bus: {eventBusArn}")
+                      raise error
+              except Exception as e:
+                  logger.error("Exception: {}".format(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, event['LogicalResourceId'], reason=str(e))
+      Description: Function to subscribe for Cross Account CodeCommit events
+      Handler: "index.lambda_handler"
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt CrossAccountCodeCommitSubscriptionRole.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: info
+
+  # -----------------------------------------------------------------------------
+  # Parameters used by other templates - global
+  # -----------------------------------------------------------------------------
+  ResourcePrefixParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/ResourcePrefix'
+      Type: String
+      Value: !Ref ResourcePrefix
+      Description: The resource prefix for all resources
+  DeleteBucketContentLambdaArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/Lambda/DeleteBucketContentLambda/Arn'
+      Type: String
+      Value: !GetAtt DeleteBucketContent.Arn
+      Description: The ARN of the DeleteBucketContent Lambda function
+  ArtifactBucketNameIdParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/S3/ArtifactBucketNameId'
+      Type: String
+      Value: !Sub '${ArtifactBucketName}'
+      Description: The configurable part of the Artifact Bucket Name
+  CodeCommitAccountParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/CodeCommitAccount'
+      Type: String
+      Value: !Ref CodeCommitAccount
+      Description: The Code Commit Account
+  CodeCommitRegionParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/CodeCommitRegion'
+      Type: String
+      Value: !If [IsSpokeAccountDefaultRegion, 'us-east-1', !Ref CodeCommitRegion]
+      Description: The Code Commit Region
+  PrincipleOrgIdParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/PrincipleOrgId'
+      Type: String
+      Value: !Ref PrincipleOrgId
+      Description: Principle Organizational ID for cross account access scenarios
+  IsArmSupportedRegionParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/IsArmSupportedRegion'
+      Type: String
+      Value: !If [IsArmSupportedRegion, 'True', 'False']
+      Description: Indicates if ARM Architecture for Lambda function is supported in this region
+
+  # -----------------------------------------------------------------------------
+  # Parameters used by other templates - spoke accounts (not conditional)
+  # -----------------------------------------------------------------------------
+  CrossAccountCodeCommitNotificationEventBusArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/CrossAccount/CodeCommit/Notification/EventBusArn'
+      Type: String
+      Value: !If
+        - IsSpokeAccount
+        - !GetAtt CrossAccountCodeCommitNotificationEventBus.Arn
+        - NA
+      Description: !Sub 
+        - 'ARN of the EventBus for CrossAccount Code Commit Notification${Suffix}'
+        - { Suffix: !If [IsSpokeAccount, '', ' - Dummy Value only for CodeCommit account']}
+  CrossAccountCodeCommitSubscriptionEventBusArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/CrossAccount/CodeCommit/Subscription/EventBusArn'
+      Type: String
+      Value: !If
+        - IsSpokeAccount
+        - !Sub 'arn:aws:events:${CodeCommitRegion}:${CodeCommitAccount}:event-bus/${ResourcePrefix}${CrossAccountCodeCommitSubscriptionEventBusName}'
+        - NA
+      Description: !Sub 
+        - 'ARN of the EventBus for CrossAccount Code Commit Subscription${Suffix}'
+        - { Suffix: !If [IsSpokeAccount, '', ' - Dummy Value only for CodeCommit account']}
+  CrossAccountCodeCommitSubscriptionFunctionArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/CrossAccount/CodeCommit/Subscription/FunctionArn'
+      Type: String
+      Value: !If
+        - IsSpokeAccount
+        - !GetAtt CrossAccountCodeCommitSubscriptionFunction.Arn
+        - NA
+      Description: !Sub 
+        - 'ARN of the Function for CrossAccount Code Commit Subscription${Suffix}'
+        - { Suffix: !If [IsSpokeAccount, '', ' - Dummy Value only for CodeCommit account']}

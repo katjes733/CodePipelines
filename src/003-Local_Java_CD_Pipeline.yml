@@ -1,0 +1,936 @@
+
+# MIT License
+# 
+# Copyright (c) 2021 Martin Macecek
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Pipeline for Java and Maven Build
+
+# -----------------------------------------------------------------------------
+# Parameters
+# -----------------------------------------------------------------------------
+Parameters:
+  ArtifactName:
+    Description: The name of the artifact as per the maven build target. If no pipeline name specified, this will be used to name the Pipeline as well.
+    ConstraintDescription: Must be a valid artifact name
+    Type: String
+    Default: javamavenbuild
+    AllowedPattern: ^[a-zA-Z0-9\.-]{1,20}$
+  DynamicPipelineNamePrefix:
+    Description: The prefix name of the pipeline. If none provided, the value of ArtifactName is used.
+    ConstraintDescription: Must be a valid prefix
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[a-zA-Z0-9]{1}[a-zA-Z0-9\.-]{0,17}[a-zA-Z0-9]{1}$
+  PipelineName:
+    Description: The name of the pipeline. If none provided, the value of ArtifactName is used. Supersedes DynamicPipelineNamePrefix.
+    ConstraintDescription: Must be a valid pipeline name
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[A-Za-z0-9.@\-_]{1,100}$
+  RepositoryName:
+    Description: Name of the repository - leave empty to work with sources in S3
+    ConstraintDescription: Must be a valid CodeCommit name
+    Type: String
+    AllowedPattern: ^$|^[\w\.-]{1,100}$
+  BranchName:
+    Description: Name of the branch to monitor for code changes
+    ConstraintDescription: Must be a valid GIT branch name, even if CodeCommit is not used (leave default)
+    Type: String
+    Default: acceptance
+    AllowedPattern: ^((feature|release|bugfix|hotfix)\/)?[\w\.\-]{1,80}$
+  CodeCommitAccount:
+    Description: The CodeCommit Account Parameter
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CodeCommitAccount
+    AllowedValues:
+      - /CD/CodeCommitAccount
+  CodeCommitRegion:
+    Description: The CodeCommit Region Parameter
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CodeCommitRegion
+    AllowedValues:
+      - /CD/CodeCommitRegion
+  SourceObjectKey:
+    Description: 'S3 source artifact'
+    Type: String
+    Default: JavaMavenBuild.zip
+  ExecutionRate:
+    Description: The execution rate in hours; 0 indicates no scheduled execution and execution on code change only
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 24
+  ResourcePrefix:
+    Description: The prefix for all resources
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/ResourcePrefix
+    AllowedValues:
+      - /CD/ResourcePrefix
+  ArtifactBucketNameId:
+    Description: The configurable part of the Artifact Bucket Name
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /S3/ArtifactBucketNameId
+    AllowedValues:
+      - /S3/ArtifactBucketNameId
+  DeleteBucketContentLambdaArn:
+    Description: The ARN of the DeleteBucketContent Lambda function
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /Lambda/DeleteBucketContentLambda/Arn
+    AllowedValues:
+      - /Lambda/DeleteBucketContentLambda/Arn
+  NotifyOnSuccess:
+    Description: Whether or not to notify if a CodePipline Execution succeeded
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
+  NotifyOnApprovalReject:
+    Description: Whether or not to notify if a an approval action was rejected
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
+  TargetArtifactBucketName:
+    Description: Target Artifact Bucket Name; if none specified, a default one is provided
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^([a-z0-9-]{0,7})([a-z0-9-]{1,23})-\d{12}-[a-z]{2}-(gov-){0,1}(north|northeast|east|southeast|south|southwest|west|northwest|central)-[1-9]{1}$
+  TargetArtifactPath:
+    Description: Target Artifact Path without filename
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[a-zA-Z0-9]+[a-zA-Z0-9-_]*(\/[a-zA-Z0-9]+[a-zA-Z0-9-_]*)*$
+  OverrideAcceptanceApprovalRequirement:
+    Description: Destination with Acceptance in the path always require an approval. with this parameter the need for approval can be overridden.
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
+  JavaDocPublish:
+    Description: Whether or not to create resources to publish javadoc for Java Maven Build. Only applicable for Global-Dev account and us-east-1 region.
+    Type: String
+    Default: false
+    AllowedValues:
+      - false
+      - true
+  JavaDocNotificationWebHookUrl:
+    Description: The JavaDoc NotificationWebhook URL
+    Type: String
+    Default: ''
+  JavaDocDomain:
+    Description: The domain of JavaDoc URL
+    Type: String
+    Default: dummydomain.com
+  JavaDocSubDomain:
+    Description: The sub domain of JavaDoc URL
+    Type: String
+    Default: javamavenbuild
+    AllowedPattern: ^[a-z0-9-]{1,23}$
+  JavaDocDefaultPublishingAccount:
+    Description: The default Publishing Account for Java Doc
+    Type: String
+    Default: '111122223333'
+    AllowedPattern: ^\d{12}$
+  JavaDocAllowedCidrs:
+    Description: The allowed CIDRs to access the JavaDoc
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))(,(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2])))*$
+  CrossAccountCodeCommitNotificationEventBusArn:
+    Description: The ARN of the EventBus for CrossAccount Code Commit Notification
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CrossAccount/CodeCommit/Notification/EventBusArn
+    AllowedValues:
+      - /CD/CrossAccount/CodeCommit/Notification/EventBusArn
+  CrossAccountCodeCommitSubscriptionEventBusArn:
+    Description: The ARN of the EventBus for CrossAccount Code Commit Subscription
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CrossAccount/CodeCommit/Subscription/EventBusArn
+    AllowedValues:
+      - /CD/CrossAccount/CodeCommit/Subscription/EventBusArn
+  CrossAccountCodeCommitSubscriptionFunctionArnParameter:
+    Description: The ARN of the Function for CrossAccount Code Commit Subscription
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
+    AllowedValues:
+      - /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
+
+# -----------------------------------------------------------------------------
+# Conditions
+# -----------------------------------------------------------------------------
+Conditions:
+  UseSourceCodeS3: !Equals [!Ref RepositoryName, '']
+  UseSourceCodeCommit: !Not [!Condition UseSourceCodeS3]  
+  IsDefaultTargetArtifactPath: !Equals [!Ref TargetArtifactPath, '']
+  IsAcceptance: !Or [!Equals [!Select [0, !Split ["/", !Ref TargetArtifactPath]], 'Acceptance'], !Equals [!Select [0, !Split ["/", !Ref TargetArtifactPath]], 'acceptance'], !Condition IsDefaultTargetArtifactPath]
+  IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
+  IsScheduledExecution: !Not [!Condition IsChangeExecution]
+  IsOverrideAcceptanceApprovalRequirement: !Equals [!Ref OverrideAcceptanceApprovalRequirement, 'true']
+  IsApprovalRequired: !And [!Condition UseSourceCodeCommit, !And [!Condition IsAcceptance, !Not [!Condition IsOverrideAcceptanceApprovalRequirement]], !Condition IsChangeExecution]
+  IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
+  NotifySuccess: !Equals [!Ref NotifyOnSuccess, 'true']  
+  IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
+  IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']  
+  IsTargetArtifactBucketNameEmpty: !Equals [!Ref TargetArtifactBucketName, '']
+  IsPublishJavaDoc: !And [!Equals [!Ref JavaDocPublish, 'true'], !Equals [!Ref AWS::AccountId, !Ref JavaDocDefaultPublishingAccount], !Equals [!Ref AWS::Region, 'us-east-1']]
+
+# -----------------------------------------------------------------------------
+# Resources
+# -----------------------------------------------------------------------------
+Resources:
+  GetKmsKeyArn:
+    Type: Custom::GetKmsKeyArn
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetKmsKeyArn'
+      Region: !Sub '${AWS::Region}'
+      KeyId: !Sub 'alias/${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+  TargetArtifactBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Not necessary here"
+          - id: W51
+            reason: "Not necessary here"
+    Condition: IsTargetArtifactBucketNameEmpty
+    Properties:
+      BucketName: !Sub '${ResourcePrefix}${ArtifactName}-artifacts-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      VersioningConfiguration: 
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+        - Id: Put everything into STANDARD_IA after 30 days
+          Transitions:
+          - StorageClass: STANDARD_IA
+            TransitionInDays: 30
+          Status: Enabled
+  DeleteContentFromTargetArtifactBucket:
+    Type: Custom::DeleteContentFromSourceBucket
+    Condition: IsTargetArtifactBucketNameEmpty
+    Properties:
+      ServiceToken: !Ref DeleteBucketContentLambdaArn
+      BucketName: !Ref TargetArtifactBucket
+  CodeBuildTargetArtifactBucketAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}${ArtifactName}-CD-${AWS::Region}-CodeBuildTargetArtifactBucketAccessPolicy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !If [IsTargetArtifactBucketNameEmpty, !Sub '${TargetArtifactBucket.Arn}', !Sub 'arn:aws:s3:::${TargetArtifactBucketName}']
+              - !If [IsTargetArtifactBucketNameEmpty, !Sub '${TargetArtifactBucket.Arn}/*', !Sub 'arn:aws:s3:::${TargetArtifactBucketName}/*']
+      Roles: 
+        - !Sub '${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
+  JavaMavenBuildCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildTargetArtifactBucketAccessPolicy
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-${ArtifactName}'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: !Sub 'Build project for ${ArtifactName}'
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 15
+  PublishJavaDocCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildTargetArtifactBucketAccessPolicy
+    Condition: IsPublishJavaDoc
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-PublishJavaDoc'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: !Sub 'Build project to publish JavaDoc for ${ArtifactName}'
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: JAVA_DOC_JMB_BUCKET
+            Type: PLAINTEXT
+            Value: !Ref JavaDocJmbBucket
+          - Name: TARGET_ARTIFACT_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${ArtifactName}'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            post_build:
+              commands:
+                - unzip -d ./JavaDoc $TARGET_ARTIFACT_NAME-javadoc.jar
+                - echo copy JavaDoc to s3://$JAVA_DOC_JMB_BUCKET
+                - aws s3 cp ./JavaDoc s3://$JAVA_DOC_JMB_BUCKET --recursive --exclude "META-INF/*" --sse AES256
+      TimeoutInMinutes: 5
+  PublishJavaDocBucketAccessPolicy:
+    Type: AWS::IAM::Policy
+    Condition: IsPublishJavaDoc
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}CD-${AWS::Region}-PublishJavaDocBucketAccessPolicy'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub '${JavaDocJmbBucket.Arn}'
+              - !Sub '${JavaDocJmbBucket.Arn}/*'
+      Roles: 
+        - !Sub '${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
+  BuildArtifactPromotionCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodeBuildTargetArtifactBucketAccessPolicy
+    Properties:
+      Name: !Sub '${ResourcePrefix}CodeBuild-BuildArtifactPromotion'
+      Cache:
+        Type: S3
+        Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+      Description: Build project to promote build artifacts
+      EncryptionKey: !GetAtt GetKmsKeyArn.KmsKeyArn
+      ServiceRole: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodeBuildRole'
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type:        LINUX_CONTAINER
+        Image:       aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: TARGET_ARTIFACT_BUCKET
+            Type: PLAINTEXT
+            Value: !If [IsTargetArtifactBucketNameEmpty, !Ref TargetArtifactBucket, !Ref TargetArtifactBucketName]
+          - Name: TARGET_ARTIFACT_PATH
+            Type: PLAINTEXT
+            Value: !Ref TargetArtifactPath
+          - Name: TARGET_ARTIFACT_NAME
+            Type: PLAINTEXT
+            Value: !Sub '${ArtifactName}.zip'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            post_build:
+              commands:
+                - echo copy artifact $TARGET_ARTIFACT_NAME to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH
+                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256
+      TimeoutInMinutes: 5
+  Pipeline: 
+    Type: AWS::CodePipeline::Pipeline
+    Properties: 
+      Name: !If
+        - IsPipelineNameEmpty
+        - !If 
+          - IsDynamicPipelineNamePrefixEmpty
+          - !Join ["-", [!Ref ArtifactName, !Join ["-", !Split ["/", !Ref BranchName]]]]
+          - !Join ["-", [!Ref DynamicPipelineNamePrefix, !Join ["-", !Split ["/", !Ref BranchName]]]]
+        - !Ref PipelineName
+      RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${ResourcePrefix}CD-${AWS::Region}-CodePipelineServiceRole'
+      Stages: 
+        - Name: Source
+          Actions: 
+            - !If
+              - UseSourceCodeCommit
+              - Name: TemplateSourceCodeCommit
+                ActionTypeId: 
+                  Category: Source
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CodeCommit
+                OutputArtifacts: 
+                  - Name: JMBCodeCc
+                Configuration:
+                  RepositoryName: !Ref RepositoryName
+                  BranchName: !Ref BranchName
+                  PollForSourceChanges: false
+                RoleArn: !If 
+                  - IsSpokeAccount
+                  - !Sub 'arn:aws:iam::${CodeCommitAccount}:role/${ResourcePrefix}CrossAccountCodeCommitRole-${AWS::Region}'
+                  - !Ref AWS::NoValue
+                RunOrder: 1
+              - Name: TemplateSourceS3
+                ActionTypeId: 
+                  Category: Source
+                  Owner: AWS
+                  Version: '1'
+                  Provider: S3
+                OutputArtifacts: 
+                  - Name: JMBCodeS3
+                Configuration:
+                  S3Bucket: !Sub '${ResourcePrefix}cd-sourcebucket-${AWS::AccountId}-${AWS::Region}'
+                  S3ObjectKey: !Ref SourceObjectKey
+                  PollForSourceChanges: false
+                RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: !Sub 'build-${ArtifactName}'
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref JavaMavenBuildCodeBuildProject
+              InputArtifacts:
+                - !If
+                  - UseSourceCodeCommit
+                  - Name: JMBCodeCc
+                  - Name: JMBCodeS3
+              OutputArtifacts:
+                - Name: JMBBuildO
+              RunOrder: 1
+        - Name: Promote
+          Actions:
+            - !If
+              - IsApprovalRequired              
+              - Name: ApproveBuildArtifactPromotion
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: '1'
+                Configuration:
+                  NotificationArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ResourcePrefix}CD-CodePipeline-Approval-Topic'
+                  CustomData: !Sub 'Do you want to promote the build artifact ${ArtifactName}.zip to s3://${TargetArtifactBucketName}${TargetArtifactPath}?'
+                RunOrder: 1
+              - !Ref AWS::NoValue
+            - Name: BuildArtifactPromotion
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref BuildArtifactPromotionCodeBuildProject
+              InputArtifacts:
+                - Name: JMBBuildO
+              RunOrder: 2
+            - !If 
+              - IsPublishJavaDoc
+              - Name: PublishJavaDoc
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Version: '1'
+                  Provider: CodeBuild
+                Configuration:
+                  ProjectName: !Ref PublishJavaDocCodeBuildProject
+                InputArtifacts:
+                  - Name: JMBBuildO
+                RunOrder: 2
+              - !Ref AWS::NoValue
+      ArtifactStores:
+        - Region: !Sub '${AWS::Region}'
+          ArtifactStore: 
+            Type: S3
+            Location: !Sub '${ResourcePrefix}${ArtifactBucketNameId}-${AWS::AccountId}-${AWS::Region}'
+            EncryptionKey:
+              Id: !GetAtt GetKmsKeyArn.KmsKeyArn
+              Type: KMS
+  AmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${ResourcePrefix}StartPipelineExecution'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+  EventRuleOnChangeSourceS3:
+    Type: AWS::Events::Rule
+    Condition: UseSourceCodeS3
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceS3'
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - CopyObject
+            - PutObject
+            - CompleteMultipartUpload
+          requestParameters:
+            bucketName:
+              - !Sub '${ResourcePrefix}cd-sourcebucket-${AWS::AccountId}-${AWS::Region}'
+            key:
+              - !Ref SourceObjectKey
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3-${Pipeline}'
+  EventRuleOnChangeSourceCodeCommit:
+    Type: AWS::Events::Rule
+    Condition: UseSourceCodeCommit
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceCodeCommit'
+      EventBusName: !If 
+        - IsSpokeAccount
+        - !Ref CrossAccountCodeCommitNotificationEventBusArn
+        - 'default'
+      EventPattern:
+        source:
+          - !If
+            - IsSpokeAccount
+            - crossaccount.codecommit
+            - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !If
+            - IsSpokeAccount
+            - !Sub 'arn:aws:codecommit:${AWS::Region}:${CodeCommitAccount}:${RepositoryName}'
+            - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${RepositoryName}'
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - !Ref BranchName
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Cc-${Pipeline}'
+  EventRuleOnSchedule:
+    Type: AWS::Events::Rule
+    Condition: IsScheduledExecution
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnSchedule'
+      ScheduleExpression: !Sub 'rate(${ExecutionRate} hours)'
+      Targets:
+        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Schedule-${Pipeline}'
+  EventRuleOnPipelineExecutionStateChange:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnPipelineExecutionStateChange'
+      EventPattern:
+        source:
+          - aws.codepipeline
+        detail-type:
+          - CodePipeline Pipeline Execution State Change
+        detail:
+          state:
+            - FAILED
+            - !If
+              - NotifySuccess
+              - SUCCEEDED
+              - !Ref 'AWS::NoValue'
+          pipeline: 
+            - !Ref Pipeline
+      Targets:
+        - Arn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
+          Id: !Sub '${AWS::StackName}'
+          InputTransformer:
+            InputPathsMap: 
+              detail: "$.detail"
+              time: "$.time"
+              region: "$.region"
+              account: "$.account"
+            InputTemplate: !Sub '{"account": "<account>", "region": "<region>", "time": "<time>", "notifyOnApprovalReject": "${NotifyOnApprovalReject}"}'
+
+  NotifyCdTeamsPermissions:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventRuleOnPipelineExecutionStateChange.Arn
+
+  ExternalIpSet:
+    Type: AWS::WAFv2::IPSet
+    Condition: IsPublishJavaDoc
+    Properties: 
+      Addresses: !Split [ ',', !Ref JavaDocAllowedCidrs ]
+      Description: External IPs only
+      IPAddressVersion: IPV4 
+      Name: !Sub '${ResourcePrefix}External'
+      Scope: CLOUDFRONT
+
+  JavaDocJmbWebAcl:
+    Type: 'AWS::WAFv2::WebACL'
+    Condition: IsPublishJavaDoc
+    Properties:
+      Name: !Sub '${ResourcePrefix}JmbJavaDoc'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Block: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${ResourcePrefix}JmbJavaDoc-Default-Block'
+      Rules:
+        - Name: !Sub '${ResourcePrefix}JmbJavaDoc-External'
+          Priority: 0
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt ExternalIpSet.Arn
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub '${ResourcePrefix}JmbJavaDoc-External-Allow'
+
+  JavaDocJmbOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Condition: IsPublishJavaDoc
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'access-identity-${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}.s3.amazonaws.com'
+
+  GetHostedZoneId:
+    Type: Custom::GetHostedZoneId
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}GetHostedZoneId'
+      DnsName: !Ref JavaDocDomain
+
+  JavaDocJmbCloudFrontDistributionCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: IsPublishJavaDoc
+    Properties:
+      DomainName: !Sub '${JavaDocSubDomain}.${JavaDocDomain}'
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub '${JavaDocSubDomain}.${JavaDocDomain}'
+          HostedZoneId: !GetAtt GetHostedZoneId.HostedZoneId
+
+  JavaDocJmbCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W10
+            reason: "Logging not required for internal distribution"
+          - id: W70
+            reason: "Specified TLS 1.2 2019"
+    Condition: IsPublishJavaDoc
+    Properties: 
+      DistributionConfig:
+        Aliases:
+          - !Sub '${JavaDocSubDomain}.${JavaDocDomain}'
+        DefaultRootObject: index.html
+        Origins:
+          - Id: !Sub 'S3-${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}'
+            DomainName: !Sub '${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}.s3.amazonaws.com'
+            OriginPath: ''
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${JavaDocJmbOriginAccessIdentity}'
+            ConnectionAttempts: 3
+            ConnectionTimeout: 10
+            OriginShield:
+              Enabled: false
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub 'S3-${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}'
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - HEAD
+            - GET
+          CachedMethods:
+            - HEAD
+            - GET
+          ForwardedValues:
+            QueryString: false
+          MinTTL: 0
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+        PriceClass: PriceClass_All
+        Enabled: true
+        ViewerCertificate:
+          AcmCertificateArn: !Ref JavaDocJmbCloudFrontDistributionCertificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2019
+        WebACLId: !GetAtt JavaDocJmbWebAcl.Arn
+        HttpVersion: http2
+        IPV6Enabled: true
+
+  JavaDocJmbNotificationToTeamsLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Not necessary here"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}${JavaDocSubDomain}-NotificationToTeamsRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${ResourcePrefix}${JavaDocSubDomain}-NotificationToTeamsPolicy'
+          PolicyDocument:
+            Id: !Sub '${ResourcePrefix}${JavaDocSubDomain}-NotificationToTeamsPolicyDocument'
+            Version: 2012-10-17
+            Statement:
+              - Sid: Logging
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+              - Sid: ReadS3
+                Effect: Allow
+                Action:
+                  - 's3:Get*'
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:aws:s3:::${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}/*'
+  JavaDocJmbNotificationToTeamsLambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "Encryption is not necessary due no critical data here"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}${JavaDocSubDomain}-NotificationToTeams'
+  JavaDocJmbNotificationToTeamsLambda:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Not necessary here"
+          - id: W92
+            reason: "No risk of concurrency"
+    DependsOn: JavaDocJmbNotificationToTeamsLambdaLogGroup
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}${JavaDocSubDomain}-NotificationToTeams'
+      Code: 
+        ZipFile: !Sub |
+          import json, os, logging
+          import datetime as dt
+          from urllib.request import Request, urlopen
+          from urllib.error import URLError, HTTPError
+
+          HOOK_URL = os.environ['HookUrl']
+          JAVADOC_URL = os.environ['JavaDocUrl']
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info(f"event: {event}")
+              message = dict(event['Records'][0])
+
+              source = message['requestParameters']['sourceIPAddress']
+              bucket_name = message['s3']['bucket']['name']
+              filename = message['s3']['object']['key']
+              filesize = message['s3']['object']['size']
+              
+              d = dt.datetime.fromisoformat(message['eventTime'][:-1])
+              dt_formatted = d.strftime('%Y-%m-%d %H:%M:%S').split(' ')
+
+              # message information to display in Microsoft Teams
+              teams_message = {
+                  "@context": "https://schema.org/extensions",
+                  "@type": "MessageCard",
+                  "themeColor": "64a837",
+                  "title": "${ArtifactName} JavaDoc Update Notification",
+                  "text": f"${ArtifactName} JavaDoc was updated on **{dt_formatted[0]}** at **{dt_formatted[1]}** UTC",
+                  "potentialAction" : [
+                      {
+                          "@type": "OpenUri",
+                          "name": "Open Documentation",
+                          "targets": [
+                              {
+                                  "os": "default",
+                                  "uri": f"{JAVADOC_URL}"
+                              }
+                          ]
+                      }
+                  ]
+              }
+
+              # request connection to Microsoft Teams
+              request = Request(
+                  HOOK_URL,
+                  json.dumps(teams_message).encode('utf-8'))
+
+              # post message to Microsoft Teams
+              try:
+                  response = urlopen(request)
+                  response.read()
+                  logger.info("Message posted")
+              except HTTPError as err:
+                  logger.error(f"Request failed: {err.code} {err.reason}")
+              except URLError as err:
+                  logger.error(f"Server connection failed: {err.reason}")
+
+      Handler: "index.lambda_handler"
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt JavaDocJmbNotificationToTeamsLambdaRole.Arn
+      Environment:
+        Variables:
+          HookUrl: !Sub '${JavaDocNotificationWebHookUrl}'
+          JavaDocUrl: !Sub 'https://${JavaDocSubDomain}.${JavaDocDomain}'
+  JavaDocJmbNotificationToTeamsLambdaPermissions:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref JavaDocJmbNotificationToTeamsLambda
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub 'arn:aws:s3:::${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}'
+
+  JavaDocJmbBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Not necessary here"
+          - id: W51
+            reason: "Not necessary here"
+    Condition: IsPublishJavaDoc
+    Properties:
+      BucketName: !Sub '${ResourcePrefix}${JavaDocSubDomain}-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+        - Id: Put everything into STANDARD_IA after 30 days
+          Transitions:
+          - StorageClass: STANDARD_IA
+            TransitionInDays: 30
+          Status: Enabled
+      PublicAccessBlockConfiguration:
+        RestrictPublicBuckets: false
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: index.html
+            Function: !GetAtt JavaDocJmbNotificationToTeamsLambda.Arn
+  JavaDocJmbEmptyBucket:
+    Type: Custom::JavaDocJmbEmptyBucket
+    Condition: IsPublishJavaDoc
+    Properties:
+      ServiceToken: !Ref DeleteBucketContentLambdaArn
+      BucketName: !Ref JavaDocJmbBucket
+  JavaDocJmbBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsPublishJavaDoc
+    Properties:
+      Bucket: !Ref JavaDocJmbBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: s3:GetObject
+            Effect: Allow
+            Resource: !Sub '${JavaDocJmbBucket.Arn}/*'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${JavaDocJmbOriginAccessIdentity}'
+
+  JavaDocJmbRecordSet:
+    Type: AWS::Route53::RecordSetGroup
+    Condition: IsPublishJavaDoc
+    Properties:
+      HostedZoneId: !GetAtt GetHostedZoneId.HostedZoneId
+      RecordSets:
+        - Name: !Sub '${JavaDocSubDomain}.${JavaDocDomain}'
+          Type: A
+          AliasTarget:
+            HostedZoneId: Z2FDTNDATAQYW2
+            DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
+
+  # -----------------------------------------------------------------------------
+  # Cross Account CodeCommit Resources - Register this CodePipeline for notification
+  # -----------------------------------------------------------------------------
+  ExecuteConfigureCrossAccountCodeCommitFunction:
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "This is not sensitive data, and does not need to be encrypted"
+    Condition: IsSpokeAccount
+    Type: Custom::ExecuteConfigureCrossAccountCodeCommitFunction
+    Properties:
+      ServiceToken: !Ref CrossAccountCodeCommitSubscriptionFunctionArnParameter
+      EventBusArn: !Ref CrossAccountCodeCommitSubscriptionEventBusArn
+      CodeCommitArn: !Sub 'arn:aws:codecommit:${CodeCommitRegion}:${CodeCommitAccount}:${RepositoryName}'
+      DestEventBusArn: !Ref CrossAccountCodeCommitNotificationEventBusArn
