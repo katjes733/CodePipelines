@@ -104,6 +104,12 @@ Parameters:
     Default: 0
     MinValue: 0
     MaxValue: 24
+  TypicalExecutionTimeWithoutSleep:
+    Description: The typical execution time of the complete CodePipeline in minutes without taking any sleep into consideration
+    Type: Number
+    Default: 120
+    MinValue: 0
+    MaxValue: 720
   ResourcePrefix:
     Description: The prefix for all resources
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -168,12 +174,12 @@ Parameters:
     Default: 'latest'
     AllowedPattern: latest|\d+\.\d+\.\d+
   SleepTimeAfterDeployment:
-    Description: Sleep time in seconds after deployment and other actions (up to 43200s (12h) allowed)
+    Description: Sleep time in minutes after deployment and other actions (up to 720m (12h) allowed)
     ConstraintDescription: Must be a valid sleep time in seconds with 0 meaning no sleep time at all
     Type: Number
     Default: 0
     MinValue: 0
-    MaxValue: 43200
+    MaxValue: 720
   CrossAccountCodeCommitNotificationEventBusArn:
     Description: The ARN of the EventBus for CrossAccount Code Commit Notification
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -198,6 +204,12 @@ Parameters:
     Default: /CD/StateMachineRole/Arn
     AllowedValues:
       - /CD/StateMachineRole/Arn
+  MathFunctionsFunctionArnParameter:
+    Description: The ARN of the Function for Math Functions
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /Lambda/MathFunctions/Arn
+    AllowedValues:
+      - /Lambda/MathFunctions/Arn
 
 # -----------------------------------------------------------------------------
 # Conditions
@@ -216,6 +228,7 @@ Conditions:
   IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
   IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']
   IsSleepAfterDeployment: !Not [!Equals [!Ref SleepTimeAfterDeployment, 0]]
+  IsScheduledExecutionWithSleep: !And [!Condition IsScheduledExecution, !Condition IsSleepAfterDeployment]
   UsEast1:       !Or [!Equals [!Ref DeploymentRegions, 'us-east-1'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-east-1']],    !Equals [!Ref DeploymentRegions, 'Development']]
   UsWest2:       !Or [!Equals [!Ref DeploymentRegions, 'us-west-2'],      !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'us-west-2']]]
   EuCentral1:    !Or [!Equals [!Ref DeploymentRegions, 'eu-central-1'],   !Equals [!Ref DeploymentRegions, 'All'], !And [!Equals [!Ref DeploymentRegions, 'Current'], !Equals [!Ref 'AWS::Region', 'eu-central-1']], !Equals [!Ref DeploymentRegions, 'Development']]
@@ -882,7 +895,7 @@ Resources:
         }
       RoleArn: !Ref StateMachineRoleArnParameter
       DefinitionSubstitutions:
-        seconds: !Ref SleepTimeAfterDeployment
+        seconds: !GetAtt CalculateSleepTimeInSeconds.Result
   Pipeline: 
     Type: AWS::CodePipeline::Pipeline
     Metadata:
@@ -1560,7 +1573,7 @@ Resources:
     Condition: IsScheduledExecution
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnSchedule'
-      ScheduleExpression: !Sub 'rate(${ExecutionRate} hours)'
+      ScheduleExpression: !Sub 'rate(${DetermineFinalExecutionRateInMinutes.Result} minutes)'
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
@@ -1617,16 +1630,46 @@ Resources:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
           Id: !Sub '${ResourcePrefix}${AWS::StackName}-CaCc-${Pipeline}'
+  CalculateSleepTimeInSeconds:
+    Type: Custom::CalculateSleepTimeInSeconds
+    Condition: IsSleepAfterDeployment
+    Properties:
+      ServiceToken: !Ref MathFunctionsFunctionArnParameter
+      MathFunction: mul
+      Value1: !Ref SleepTimeAfterDeployment
+      Value2: 60  
+  CalculateExecutionRateInMinutes:
+    Type: Custom::CalculateExecutionRateInMinutes
+    Condition: IsScheduledExecution
+    Properties:
+      ServiceToken: !Ref MathFunctionsFunctionArnParameter
+      MathFunction: mul
+      Value1: !Ref ExecutionRate
+      Value2: 60
+  CalculateTotalExecutionTimeWithSleepInMinutes:
+    Type: Custom::CalculateTotalExecutionTimeWithSleepInMinutes
+    Condition: IsScheduledExecutionWithSleep
+    Properties:
+      ServiceToken: !Ref MathFunctionsFunctionArnParameter
+      MathFunction: add
+      Value1: !Ref TypicalExecutionTimeWithoutSleep
+      Value2: !Ref SleepTimeAfterDeployment
+  DetermineFinalExecutionRateInMinutes:
+    Type: Custom::CalculateExDetermineFinalExecutionRateInMinutesecutionRateInMinutes
+    Condition: IsScheduledExecution
+    Properties:
+      ServiceToken: !Ref MathFunctionsFunctionArnParameter
+      MathFunction: max
+      Value1: !If
+        - IsSleepAfterDeployment
+        - !GetAtt CalculateTotalExecutionTimeWithSleepInMinutes.Result
+        - !Ref TypicalExecutionTimeWithoutSleep
+      Value2: !GetAtt CalculateExecutionRateInMinutes.Result
 
   # -----------------------------------------------------------------------------
   # Cross Account CodeCommit Resources - Register this CodePipeline for notification
   # -----------------------------------------------------------------------------
   ExecuteConfigureCrossAccountCodeCommitFunction:
-    Metadata:
-      cfn_nag:
-        rules_to_suppress:
-          - id: W84
-            reason: "This is not sensitive data, and does not need to be encrypted"
     Condition: IsSpokeAccount
     Type: Custom::ExecuteConfigureCrossAccountCodeCommitFunction
     Properties:
