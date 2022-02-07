@@ -98,11 +98,11 @@ Parameters:
       - 'eu-west-2'
       - 'ap-south-1'
   ExecutionRate:
-    Description: The execution rate in hours; 0 indicates no scheduled execution and execution on code change only
+    Description: The execution rate in minutes; 0 indicates no scheduled execution and execution on code change only
     Type: Number
     Default: 0
     MinValue: 0
-    MaxValue: 24
+    MaxValue: 1440
   TypicalExecutionTimeWithoutSleep:
     Description: The typical execution time of the complete CodePipeline in minutes without taking any sleep into consideration
     Type: Number
@@ -1605,30 +1605,6 @@ Resources:
       FunctionName: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
       Principal: events.amazonaws.com
       SourceArn: !GetAtt EventRuleOnPipelineExecutionStateChange.Arn
-  EventRuleOnChangeCrossAccountCodeCommit:
-    Type: AWS::Events::Rule
-    Condition: IsSpokeAccount
-    Properties:
-      Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeCrossAccountCodeCommit'
-      EventPattern:
-        source:
-          - aws.codecommit
-        detail-type:
-          - 'Cross-Account CodeCommit Repository State Change'
-        resources:
-          - !Sub 'arn:aws:codecommit:${CodeCommitRegion}:${CodeCommitAccount}:${RepositoryName}'
-        detail:
-          event:
-            - referenceCreated
-            - referenceUpdated
-          referenceType:
-            - branch
-          referenceName:
-            - !Ref BranchName
-      Targets:
-        - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
-          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-CaCc-${Pipeline}'
   CalculateSleepTimeInSeconds:
     Type: Custom::CalculateSleepTimeInSeconds
     Condition: IsSleepAfterDeployment
@@ -1636,14 +1612,6 @@ Resources:
       ServiceToken: !Ref MathFunctionsFunctionArnParameter
       MathFunction: mul
       Value1: !Ref SleepTimeAfterDeployment
-      Value2: 60  
-  CalculateExecutionRateInMinutes:
-    Type: Custom::CalculateExecutionRateInMinutes
-    Condition: IsScheduledExecution
-    Properties:
-      ServiceToken: !Ref MathFunctionsFunctionArnParameter
-      MathFunction: mul
-      Value1: !Ref ExecutionRate
       Value2: 60
   CalculateTotalExecutionTimeWithSleepInMinutes:
     Type: Custom::CalculateTotalExecutionTimeWithSleepInMinutes
@@ -1663,7 +1631,7 @@ Resources:
         - IsSleepAfterDeployment
         - !GetAtt CalculateTotalExecutionTimeWithSleepInMinutes.Result
         - !Ref TypicalExecutionTimeWithoutSleep
-      Value2: !GetAtt CalculateExecutionRateInMinutes.Result
+      Value2: !Ref ExecutionRate
 
   # -----------------------------------------------------------------------------
   # Cross Account CodeCommit Resources - Register this CodePipeline for notification

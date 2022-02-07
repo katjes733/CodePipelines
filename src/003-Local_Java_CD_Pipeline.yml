@@ -74,11 +74,11 @@ Parameters:
     Type: String
     Default: JavaMavenBuild.zip
   ExecutionRate:
-    Description: The execution rate in hours; 0 indicates no scheduled execution and execution on code change only
+    Description: The execution rate in minutes; 0 indicates no scheduled execution and execution on code change only
     Type: Number
     Default: 0
     MinValue: 0
-    MaxValue: 24
+    MaxValue: 1440
   TypicalExecutionTimeWithoutSleep:
     Description: The typical execution time of the complete CodePipeline in minutes without taking any sleep into consideration
     Type: Number
@@ -930,22 +930,14 @@ Resources:
             HostedZoneId: Z2FDTNDATAQYW2
             DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
 
-  CalculateExecutionRateInMinutes:
-    Type: Custom::CalculateExecutionRateInMinutes
-    Condition: IsScheduledExecution
-    Properties:
-      ServiceToken: !Ref MathFunctionsFunctionArnParameter
-      MathFunction: mul
-      Value1: !Ref ExecutionRate
-      Value2: 60
   DetermineFinalExecutionRateInMinutes:
-    Type: Custom::CalculateExDetermineFinalExecutionRateInMinutesecutionRateInMinutes
+    Type: Custom::DetermineFinalExecutionRateInMinutes
     Condition: IsScheduledExecution
     Properties:
       ServiceToken: !Ref MathFunctionsFunctionArnParameter
       MathFunction: max
       Value1: !Ref TypicalExecutionTimeWithoutSleep
-      Value2: !GetAtt CalculateExecutionRateInMinutes.Result
+      Value2: !Ref ExecutionRate
 
   # -----------------------------------------------------------------------------
   # Cross Account CodeCommit Resources - Register this CodePipeline for notification
