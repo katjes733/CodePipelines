@@ -22,7 +22,6 @@
 
 AWSTemplateFormatVersion: 2010-09-09
 Description: Pipeline for CD
-Transform: AWS::Serverless-2016-10-31
 
 # -----------------------------------------------------------------------------
 # Parameters
@@ -1655,7 +1654,7 @@ Resources:
       Value1: !Ref TypicalExecutionTimeWithoutSleep
       Value2: !Ref SleepTimeAfterDeployment
   DetermineFinalExecutionRateInMinutes:
-    Type: Custom::CalculateExDetermineFinalExecutionRateInMinutesecutionRateInMinutes
+    Type: Custom::DetermineFinalExecutionRateInMinutes
     Condition: IsScheduledExecution
     Properties:
       ServiceToken: !Ref MathFunctionsFunctionArnParameter
@@ -1677,3 +1676,12 @@ Resources:
       EventBusArn: !Ref CrossAccountCodeCommitSubscriptionEventBusArn
       CodeCommitArn: !Sub 'arn:aws:codecommit:${CodeCommitRegion}:${CodeCommitAccount}:${RepositoryName}'
       DestEventBusArn: !Ref CrossAccountCodeCommitNotificationEventBusArn
+
+# -----------------------------------------------------------------------------
+# Outputs
+# -----------------------------------------------------------------------------
+Outputs:
+  FinalExecutionRateInMinutes:
+    Condition: IsScheduledExecution
+    Description: The final execution rate in minutes
+    Value: !GetAtt DetermineFinalExecutionRateInMinutes.Result

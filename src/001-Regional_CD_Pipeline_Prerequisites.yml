@@ -1085,7 +1085,6 @@ Resources:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
   MathFunctionsLogGroup:
     Type: 'AWS::Logs::LogGroup'
-    Condition: IsSpokeAccount
     Metadata:
       cfn_nag:
         rules_to_suppress:
@@ -1096,7 +1095,6 @@ Resources:
       LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}MathFunctions'
   MathFunctionsFunction:
     Type: AWS::Lambda::Function
-    Condition: IsSpokeAccount
     Metadata:
       cfn-lint:
         config:
@@ -1151,45 +1149,27 @@ Resources:
                   cfnresponse.send(event, context, cfnresponse.FAILED, {}, event['LogicalResourceId'], reason=str(e))
           def calculate(mathFunction, val1, val2):
               if mathFunction == "add":
-                  return add(val1, val2)
+                  return toInt(float(val1) + float(val2))
               elif mathFunction == "sub":
-                  return sub(val1, val2)
+                  return toInt(float(val1) - float(val2))
               elif mathFunction == "mul":
-                  return mul(val1, val2)
+                  return toInt(float(val1) * float(val2))
               elif mathFunction == "div":
-                  return div(val1, val2)
+                  return toInt(float(val1) / float(val2))
               elif mathFunction == "max":
-                  return max(val1, val2)
+                  return toInt(max(float(val1), float(val2)))
               elif mathFunction == "min":
-                  return min(val1, val2)
+                  return toInt(min(float(val1), float(val2)))
               else:
                   raise Exception(f"{mathFunction} is no valid supported math function.")
           def toInt(val):
               return int(val) if val.is_integer() else val
-          def add(val1, val2):
-              res = float(val1) + float(val2)  
-              return toInt(res)
-          def sub(val1, val2):
-              res = float(val1) - float(val2)  
-              return toInt(res)
-          def mul(val1, val2):
-              res = float(val1) * float(val2)  
-              return toInt(res)
-          def div(val1, val2):
-              res = float(val1) / float(val2)  
-              return toInt(res)
-          def max(val1, val2):
-              res = max(float(val1), float(val2))  
-              return toInt(res)
-          def min(val1, val2):
-              res = min(float(val1), float(val2))  
-              return toInt(res)
       Description: Function to subscribe for Cross Account CodeCommit events
       Handler: "index.lambda_handler"
       Runtime: python3.9
       MemorySize: 128
       Timeout: 60
-      Role: !GetAtt CrossAccountCodeCommitSubscriptionRole.Arn
+      Role: !GetAtt MathFunctionsRole.Arn
       Environment:
         Variables:
           LOG_LEVEL: info
@@ -1258,7 +1238,7 @@ Resources:
     Properties:
       Name: '/Lambda/MathFunctions/Arn'
       Type: String
-      Value: MathFunctionsFunction.Arn
+      Value: !GetAtt MathFunctionsFunction.Arn
       Description: ARN of Lambda function for math functions
 
   # -----------------------------------------------------------------------------

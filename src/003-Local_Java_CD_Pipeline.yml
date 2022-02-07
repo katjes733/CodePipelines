@@ -928,7 +928,7 @@ Resources:
           Type: A
           AliasTarget:
             HostedZoneId: Z2FDTNDATAQYW2
-            DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName 
+            DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
 
   CalculateExecutionRateInMinutes:
     Type: Custom::CalculateExecutionRateInMinutes
@@ -958,3 +958,12 @@ Resources:
       EventBusArn: !Ref CrossAccountCodeCommitSubscriptionEventBusArn
       CodeCommitArn: !Sub 'arn:aws:codecommit:${CodeCommitRegion}:${CodeCommitAccount}:${RepositoryName}'
       DestEventBusArn: !Ref CrossAccountCodeCommitNotificationEventBusArn
+
+# -----------------------------------------------------------------------------
+# Outputs
+# -----------------------------------------------------------------------------
+Outputs:
+  FinalExecutionRateInMinutes:
+    Condition: IsScheduledExecution
+    Description: The final execution rate in minutes
+    Value: !GetAtt DetermineFinalExecutionRateInMinutes.Result
