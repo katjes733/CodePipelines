@@ -778,8 +778,8 @@ Resources:
                           fER = fA['output']['executionResult']
                           fMsg = fER['externalExecutionSummary']
                           if re.match(r"^Failed to create stack.*No reason was provided.*$", fMsg) and "externalExecutionId" in fER:
-                              eId = fER['externalExecutionId']
-                              sA = re.search('^.*(arn:.*)$', eId).group(1)
+                              eEId = fER['externalExecutionId']
+                              sA = re.search('^.*(arn:.*)$', eEId).group(1)
                               sR = re.search('^.*:.*:.*:(.*):\d{12}.*$', sA).group(1)
                               cfn_client = boto3.client('cloudformation', region_name=sR)
                               sEvn = cfn_client.describe_stack_events(StackName=sA)['StackEvents']
@@ -1314,6 +1314,8 @@ Resources:
             - E3002
       cfn_nag:
         rules_to_suppress:
+          - id: W58
+            reason: "Provided by managed policy AWSLambdaBasicExecutionRole in RetryCdRole"
           - id: W89
             reason: "No need for VPC here"
           - id: W92
