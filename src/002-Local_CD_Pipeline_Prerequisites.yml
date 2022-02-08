@@ -743,6 +743,7 @@ Resources:
           from urllib.error import URLError, HTTPError
 
           HOOK_URL = os.environ['HookUrl']
+          API_URL = os.environ['ApiUrl']
 
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
@@ -829,7 +830,16 @@ Resources:
                   tMsg['sections'][0]['facts'].append({"name": "Action:","value": f"{fAN}"})
                   tMsg['sections'][0]['facts'].append({"name": "Details:","value": f"{fMsg}"})
                   if fUrl is not None:
-                      tMsg['potentialAction'].append({"@type": "OpenUri","name": "Go to failed action","targets": [{"os": "default","uri": f"{fUrl}"}]})
+                      tMsg['potentialAction'].append({"@type": "OpenUri","name": "Go to failed action","targets": [{"os": "default","uri": f"{fUrl}"}]})                  
+                  retryB = {
+                      "codepipelineName": cp,
+                      "stageName": fSN,                      
+                      "executionId": eId,
+                      "messageCard": json.dumps(tMsg),
+                      "apiUrl": API_URL,
+                      "action": "Retry"
+                  }
+                  tMsg['potentialAction'].append({"@type": "HttpPOST","name": "Retry failed stage", "target": API_URL, "body": json.dumps(retryB)})
               
               notifyOnApprovalReject = "false"
               if "notifyOnApprovalReject" in ev and ev['notifyOnApprovalReject'].lower() == "true":
@@ -858,6 +868,7 @@ Resources:
       Environment:
         Variables:
           HookUrl: !Sub '${WebHookUrl}'
+          ApiUrl: !Sub 'https://${CdApiGateway}.execute-api.${AWS::Region}.amazonaws.com/call/cd/retry'
   ApprovalCdTeamsLogGroup:
     Type: 'AWS::Logs::LogGroup'
     Metadata:
@@ -1007,7 +1018,7 @@ Resources:
       Environment:
         Variables:
           HookUrl: !Sub '${WebHookUrl}'
-          ApiUrl: !Sub 'https://${ApprovalApiGateway}.execute-api.${AWS::Region}.amazonaws.com/call/pipeline/approval'
+          ApiUrl: !Sub 'https://${CdApiGateway}.execute-api.${AWS::Region}.amazonaws.com/call/cd/approval'
   ApprovalCdTeamsPermissions:
     Type: AWS::Lambda::Permission
     Properties: 
@@ -1016,35 +1027,28 @@ Resources:
       Principal: sns.amazonaws.com
       SourceArn: !Ref CodePipelineApprovelSNSTopic
 
-  ApprovalApiGateway:
+  CdApiGateway:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Description: Approval API Gateway
+      Description: Continuos Deployment API Gateway
       EndpointConfiguration:
         Types:
           - REGIONAL
-      Name: !Sub '${ResourcePrefix}approval-api'
+      Name: !Sub '${ResourcePrefix}cd-api'
 
-  PipelineApiGatewayResource:
+  CdApiGatewayResource:
     Type: AWS::ApiGateway::Resource
     Properties:
-      RestApiId: !Ref ApprovalApiGateway
-      ParentId: !GetAtt ApprovalApiGateway.RootResourceId
-      PathPart: pipeline
+      RestApiId: !Ref CdApiGateway
+      ParentId: !GetAtt CdApiGateway.RootResourceId
+      PathPart: cd
 
   ApprovalApiGatewayResource:
     Type: AWS::ApiGateway::Resource
     Properties:
-      RestApiId: !Ref ApprovalApiGateway
-      ParentId: !Ref PipelineApiGatewayResource
+      RestApiId: !Ref CdApiGateway
+      ParentId: !Ref CdApiGatewayResource
       PathPart: approval
-
-  RetryApiGatewayResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref ApprovalApiGateway
-      ParentId: !Ref PipelineApiGatewayResource
-      PathPart: retry
 
   ApprovalApiGatewayMethod:
     Type: AWS::ApiGateway::Method
@@ -1056,14 +1060,14 @@ Resources:
         Type: AWS_PROXY
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PostApprovalToCd.Arn}/invocations'
       ResourceId: !Ref ApprovalApiGatewayResource
-      RestApiId: !Ref ApprovalApiGateway
+      RestApiId: !Ref CdApiGateway
 
   ApprovalApiGatewayDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - ApprovalApiGatewayMethod
     Properties:
-      RestApiId: !Ref ApprovalApiGateway
+      RestApiId: !Ref CdApiGateway
       StageName: call
 
   ApprovalApiGatewayUsagePlan:
@@ -1072,7 +1076,7 @@ Resources:
       - ApprovalApiGatewayDeployment
     Properties:
       ApiStages:
-        - ApiId: !Ref ApprovalApiGateway
+        - ApiId: !Ref CdApiGateway
           Stage: call
       Description: Limit requests for approval
       Quota:
@@ -1082,6 +1086,50 @@ Resources:
         BurstLimit: 20
         RateLimit: 10
       UsagePlanName: ApprovalPlan
+
+  RetryApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CdApiGateway
+      ParentId: !Ref CdApiGatewayResource
+      PathPart: retry
+
+  RetryApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RetryCd.Arn}/invocations'
+      ResourceId: !Ref RetryApiGatewayResource
+      RestApiId: !Ref CdApiGateway
+
+  RetryApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - RetryApiGatewayMethod
+    Properties:
+      RestApiId: !Ref CdApiGateway
+      StageName: call
+
+  RetryApiGatewayUsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'    
+    DependsOn:
+      - RetryApiGatewayDeployment
+    Properties:
+      ApiStages:
+        - ApiId: !Ref CdApiGateway
+          Stage: call
+      Description: Limit requests for approval
+      Quota:
+        Limit: 100
+        Period: DAY
+      Throttle:
+        BurstLimit: 20
+        RateLimit: 10
+      UsagePlanName: RetryPlan
 
   PostApprovalToCdLogGroup:
     Type: 'AWS::Logs::LogGroup'
@@ -1202,11 +1250,145 @@ Resources:
       MemorySize: 128
       Timeout: 60
       Role: !GetAtt NotifyCdTeamsLambdaRole.Arn
-
   PostApprovalToCdPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !GetAtt PostApprovalToCd.Arn
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApprovalApiGateway}/*/POST/pipeline/approval
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CdApiGateway}/*/POST/cd/approval
+
+  RetryCdRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Only in case a specific resource prefix is used"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}RetryCdRole'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  RetryCdPolicy:
+    Type: 'AWS::IAM::Policy'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: '* needed, actions do not support resource level permissions'
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}RetryCdPolicy-${AWS::Region}'
+      PolicyDocument:        
+        Statement:    
+          - Action:
+              - 'codepipeline:RetryStageExecution'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:*'
+        Version: 2012-10-17      
+      Roles:
+        - !Ref RetryCdRole
+  RetryCdLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}RetryCd'
+  RetryCd:
+    Type: AWS::Lambda::Function
+    DependsOn: RetryCdLogGroup
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
+    Properties:
+      FunctionName: !Sub '${ResourcePrefix}RetryCd'
+      Description: Retry a failed CD
+      Architectures: 
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
+      Code:
+        ZipFile: |
+          import json, os, logging, botocore, boto3
+          import datetime as dt
+
+          # set logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event,context):
+            logger.info(f"event: {event}")
+            body = json.loads(event['body'])
+            logger.info(f"body: {body}")
+            cp = body['codepipelineName']
+            fSN = body['stageName']
+            eId = body['executionId']
+            tMsg = json.loads(body['messageCard'])
+            apiUrl = body['apiUrl']
+            action = body['action']
+            statusCode = 200
+            cardActionStatus = f"Retry of stage {fSN} initiated successfully"
+            try:
+              client = boto3.client('codepipeline')
+              response_retry = client.retry_stage_execution(
+                pipelineName=cp,
+                stageName=fSN,
+                pipelineExecutionId=eId,
+                retryMode='FAILED_ACTIONS')
+              logger.info(f"Retry successfully initiated: {response_retry}")
+            except botocore.exceptions.ClientError as err:
+              errCode = err.response['Error']['Code']
+              errMsg = err.response['Error']['Message']
+              logger.error(f"Retry failed: {errCode} {errMsg}")
+              cardActionStatus = f"Retry of stage {fSN} failed: {errCode} {errMsg}"
+              statusCode = 403
+              retryB = {
+                  "codepipelineName": cp,
+                  "stageName": fSN,                      
+                  "executionId": eId,
+                  "messageCard": json.dumps(tMsg),
+                  "action": "Retry"
+              }
+              tMsg['potentialAction'].append({"@type": "HttpPOST","name": "Retry failed stage", "target": apiUrl, "body": json.dumps(retryB)})
+            
+            return {
+              "isBase64Encoded": "false",
+              "statusCode": statusCode,
+              "body": json.dumps(tMsg),
+              "headers": {
+                "CARD-ACTION-STATUS": cardActionStatus,
+                "CARD-UPDATE-IN-BODY": "true"
+              }
+            }
+
+      Handler: "index.lambda_handler"
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt RetryCdRole.Arn
+  RetryCdPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt RetryCd.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CdApiGateway}/*/POST/cd/retry
