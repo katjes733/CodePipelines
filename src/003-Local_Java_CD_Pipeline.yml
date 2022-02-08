@@ -74,11 +74,17 @@ Parameters:
     Type: String
     Default: JavaMavenBuild.zip
   ExecutionRate:
-    Description: The execution rate in hours; 0 indicates no scheduled execution and execution on code change only
+    Description: The execution rate in minutes; 0 indicates no scheduled execution and execution on code change only
     Type: Number
     Default: 0
     MinValue: 0
-    MaxValue: 24
+    MaxValue: 1440
+  TypicalExecutionTimeWithoutSleep:
+    Description: The typical execution time of the complete CodePipeline in minutes without taking any sleep into consideration
+    Type: Number
+    Default: 10
+    MinValue: 0
+    MaxValue: 720
   ResourcePrefix:
     Description: The prefix for all resources
     Type: 'AWS::SSM::Parameter::Value<String>'
@@ -176,6 +182,12 @@ Parameters:
     Default: /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
     AllowedValues:
       - /CD/CrossAccount/CodeCommit/Subscription/FunctionArn
+  MathFunctionsFunctionArnParameter:
+    Description: The ARN of the Function for Math Functions
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /Lambda/MathFunctions/Arn
+    AllowedValues:
+      - /Lambda/MathFunctions/Arn
 
 # -----------------------------------------------------------------------------
 # Conditions
@@ -564,7 +576,7 @@ Resources:
     Condition: IsScheduledExecution
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnSchedule'
-      ScheduleExpression: !Sub 'rate(${ExecutionRate} hours)'
+      ScheduleExpression: !Sub 'rate(${DetermineFinalExecutionRateInMinutes.Result} minutes)'
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
@@ -918,15 +930,19 @@ Resources:
             HostedZoneId: Z2FDTNDATAQYW2
             DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
 
+  DetermineFinalExecutionRateInMinutes:
+    Type: Custom::DetermineFinalExecutionRateInMinutes
+    Condition: IsScheduledExecution
+    Properties:
+      ServiceToken: !Ref MathFunctionsFunctionArnParameter
+      MathFunction: max
+      Value1: !Ref TypicalExecutionTimeWithoutSleep
+      Value2: !Ref ExecutionRate
+
   # -----------------------------------------------------------------------------
   # Cross Account CodeCommit Resources - Register this CodePipeline for notification
   # -----------------------------------------------------------------------------
   ExecuteConfigureCrossAccountCodeCommitFunction:
-    Metadata:
-      cfn_nag:
-        rules_to_suppress:
-          - id: W84
-            reason: "This is not sensitive data, and does not need to be encrypted"
     Condition: IsSpokeAccount
     Type: Custom::ExecuteConfigureCrossAccountCodeCommitFunction
     Properties:
@@ -934,3 +950,12 @@ Resources:
       EventBusArn: !Ref CrossAccountCodeCommitSubscriptionEventBusArn
       CodeCommitArn: !Sub 'arn:aws:codecommit:${CodeCommitRegion}:${CodeCommitAccount}:${RepositoryName}'
       DestEventBusArn: !Ref CrossAccountCodeCommitNotificationEventBusArn
+
+# -----------------------------------------------------------------------------
+# Outputs
+# -----------------------------------------------------------------------------
+Outputs:
+  FinalExecutionRateInMinutes:
+    Condition: IsScheduledExecution
+    Description: The final execution rate in minutes
+    Value: !GetAtt DetermineFinalExecutionRateInMinutes.Result

@@ -342,6 +342,7 @@ Resources:
             Resource: !Ref CodePipelineApprovelSNSTopic
       Topics: 
         - !Ref CodePipelineApprovelSNSTopic
+  # TODO: Consider moving to 001 template
   CodePipelineServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -413,6 +414,7 @@ Resources:
                   - rds:*
                   - sqs:*
                   - ecs:*
+                  - states:*
                 Resource: '*'
               - !If 
                 - IsCrossAccountCodeCommit

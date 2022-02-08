@@ -332,6 +332,43 @@ Resources:
       MemorySize: 128
       Timeout: 600
       Role: !GetAtt DeleteBucketContentRole.Arn
+  StateMachineRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Not relevant, because it can be replaced at any time"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}StateMachineRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+      ManagedPolicyArns: []
+  StateMachineRolePolicy:
+    Type: 'AWS::IAM::Policy'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W12
+            reason: "The action cloudwatch:PutMetricData only supports all resources"
+    Properties:
+      PolicyName: !Sub '${ResourcePrefix}StateMachineRolePolicy-${AWS::Region}'
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'cloudwatch:PutMetricData'
+            Resource: '*'
+        Version: 2012-10-17      
+      Roles:
+        - !Ref StateMachineRole
   
   # -----------------------------------------------------------------------------
   # Cross Account CodeCommit Resources - Only for account with CodeCommit
@@ -1026,6 +1063,116 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: info
+  
+  # Math Functions
+  MathFunctionsRole:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "Only in case a specific resource prefix is used"
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}MathFunctionsRole-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+  MathFunctionsLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "No critical data in logs"
+    Properties:
+      RetentionInDays: 1
+      LogGroupName: !Sub '/aws/lambda/${ResourcePrefix}MathFunctions'
+  MathFunctionsFunction:
+    Type: AWS::Lambda::Function
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+      cfn_nag:
+        rules_to_suppress:
+          - id: W58
+            reason: "Provided by managed policy AWSLambdaBasicExecutionRole in MathFunctionsRole"
+          - id: W89
+            reason: "No need for VPC here"
+          - id: W92
+            reason: "No concurrency needed"
+    DependsOn: 
+      - MathFunctionsLogGroup
+    Properties: 
+      FunctionName: !Sub '${ResourcePrefix}MathFunctions'
+      Architectures:  
+        - !If 
+          - IsArmSupportedRegion
+          - arm64
+          - x86_64
+      Code: 
+        ZipFile: |          
+          import cfnresponse
+          import json, logging, os
+
+          levels = {
+              'critical': logging.CRITICAL,
+              'error': logging.ERROR,
+              'warn': logging.WARNING,
+              'info': logging.INFO,
+              'debug': logging.DEBUG
+          }
+          logger = logging.getLogger()
+          try:   
+              logger.setLevel(levels.get(os.getenv('LOG_LEVEL', 'info').lower()))
+          except KeyError as e:
+              logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info(f"event: {event}")
+              mathFunction = event['ResourceProperties']['MathFunction'].lower()
+              val1 = event['ResourceProperties']['Value1']
+              val2 = event['ResourceProperties']['Value2']
+              try:
+                  result = calculate(mathFunction, val1, val2)
+                  logger.info(f"Calculated value: {result}")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {"Result": result}, event['LogicalResourceId'])
+              except Exception as e:
+                  logger.error(f"Exception: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, event['LogicalResourceId'], reason=str(e))
+          def calculate(mathFunction, val1, val2):
+              if mathFunction == "add":
+                  return toInt(float(val1) + float(val2))
+              elif mathFunction == "sub":
+                  return toInt(float(val1) - float(val2))
+              elif mathFunction == "mul":
+                  return toInt(float(val1) * float(val2))
+              elif mathFunction == "div":
+                  return toInt(float(val1) / float(val2))
+              elif mathFunction == "max":
+                  return toInt(max(float(val1), float(val2)))
+              elif mathFunction == "min":
+                  return toInt(min(float(val1), float(val2)))
+              else:
+                  raise Exception(f"{mathFunction} is no valid supported math function.")
+          def toInt(val):
+              return int(val) if val.is_integer() else val
+      Description: Function to subscribe for Cross Account CodeCommit events
+      Handler: "index.lambda_handler"
+      Runtime: python3.9
+      MemorySize: 128
+      Timeout: 60
+      Role: !GetAtt MathFunctionsRole.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: info
 
   # -----------------------------------------------------------------------------
   # Parameters used by other templates - global
@@ -1079,6 +1226,20 @@ Resources:
       Type: String
       Value: !If [IsArmSupportedRegion, 'True', 'False']
       Description: Indicates if ARM Architecture for Lambda function is supported in this region
+  StateMachineRoleArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/CD/StateMachineRole/Arn'
+      Type: String
+      Value: !GetAtt StateMachineRole.Arn
+      Description: The ARN of the StateMachine Role
+  MathFunctionsFunctionArnParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: '/Lambda/MathFunctions/Arn'
+      Type: String
+      Value: !GetAtt MathFunctionsFunction.Arn
+      Description: ARN of Lambda function for math functions
 
   # -----------------------------------------------------------------------------
   # Parameters used by other templates - spoke accounts (not conditional)
