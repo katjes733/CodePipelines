@@ -573,7 +573,7 @@ Resources:
                                   logger.error(f"Account {account} does not allow writing to the following event bus: {eventBusArn}")
                               else:
                                   logger.error(f"Unexpected error: {errCode} {errMsg}")
-                           except Exception as e:
+                          except Exception as e:
                               logger.error(f"Unexpected error: {e}")
                       else:
                           logger.info(f"Event was already successfully forwarded to event bus {eventBusArn} before and is therefore skipped.")
