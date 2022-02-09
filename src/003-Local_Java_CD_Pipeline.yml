@@ -111,7 +111,7 @@ Parameters:
       - false
       - true
   NotifyOnApprovalReject:
-    Description: Whether or not to notify if a an approval action was rejected
+    Description: Whether or not to notify if an approval action was rejected
     Type: String
     Default: false
     AllowedValues:
