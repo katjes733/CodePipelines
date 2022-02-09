@@ -220,6 +220,8 @@ Conditions:
   IsAcceptance: !Or [!Equals [!Ref GlobalArtifactS3Prefix, 'Acceptance'], !Equals [!Ref GlobalArtifactS3Prefix, 'acceptance'], !Condition IsDefaultGlobalArtifactS3Prefix]
   IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
   IsScheduledExecution: !Not [!Condition IsChangeExecution]
+  IsChangeExecutionWithSourceCodeS3: !And [!Condition IsChangeExecution, !Condition UseSourceCodeS3]
+  IsChangeExecutionWithSourceCodeCommit: !And [!Condition IsChangeExecution, !Condition UseSourceCodeCommit]
   IsOverrideAcceptanceApprovalRequirement: !Equals [!Ref OverrideAcceptanceApprovalRequirement, 'true']
   IsApprovalRequired: !And [!Condition UseSourceCodeCommit, !And [!Condition IsAcceptance, !Not [!Condition IsOverrideAcceptanceApprovalRequirement]], !Condition IsChangeExecution]
   IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
@@ -1509,7 +1511,7 @@ Resources:
                 Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
   EventRuleOnChangeSourceS3:
     Type: AWS::Events::Rule
-    Condition: UseSourceCodeS3
+    Condition: IsChangeExecutionWithSourceCodeS3
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceS3'
       EventPattern:
@@ -1535,7 +1537,7 @@ Resources:
           Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3-${Pipeline}'
   EventRuleOnChangeSourceCodeCommit:
     Type: AWS::Events::Rule
-    Condition: UseSourceCodeCommit
+    Condition: IsChangeExecutionWithSourceCodeCommit
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceCodeCommit'
       EventBusName: !If 

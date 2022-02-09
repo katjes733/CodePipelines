@@ -111,7 +111,7 @@ Parameters:
       - false
       - true
   NotifyOnApprovalReject:
-    Description: Whether or not to notify if a an approval action was rejected
+    Description: Whether or not to notify if an approval action was rejected
     Type: String
     Default: false
     AllowedValues:
@@ -199,6 +199,8 @@ Conditions:
   IsAcceptance: !Or [!Equals [!Select [0, !Split ["/", !Ref TargetArtifactPath]], 'Acceptance'], !Equals [!Select [0, !Split ["/", !Ref TargetArtifactPath]], 'acceptance'], !Condition IsDefaultTargetArtifactPath]
   IsChangeExecution: !Equals [!Ref ExecutionRate, 0]
   IsScheduledExecution: !Not [!Condition IsChangeExecution]
+  IsChangeExecutionWithSourceCodeS3: !And [!Condition IsChangeExecution, !Condition UseSourceCodeS3]
+  IsChangeExecutionWithSourceCodeCommit: !And [!Condition IsChangeExecution, !Condition UseSourceCodeCommit]
   IsOverrideAcceptanceApprovalRequirement: !Equals [!Ref OverrideAcceptanceApprovalRequirement, 'true']
   IsApprovalRequired: !And [!Condition UseSourceCodeCommit, !And [!Condition IsAcceptance, !Not [!Condition IsOverrideAcceptanceApprovalRequirement]], !Condition IsChangeExecution]
   IsSpokeAccount: !And [!Condition UseSourceCodeCommit, !Not [!Equals [!Ref CodeCommitAccount, '']], !Not [!Equals [!Ref CodeCommitAccount, !Ref AWS::AccountId]]]
@@ -513,7 +515,7 @@ Resources:
                 Resource: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
   EventRuleOnChangeSourceS3:
     Type: AWS::Events::Rule
-    Condition: UseSourceCodeS3
+    Condition: IsChangeExecutionWithSourceCodeS3
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceS3'
       EventPattern:
@@ -539,7 +541,7 @@ Resources:
           Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3-${Pipeline}'
   EventRuleOnChangeSourceCodeCommit:
     Type: AWS::Events::Rule
-    Condition: UseSourceCodeCommit
+    Condition: IsChangeExecutionWithSourceCodeCommit
     Properties:
       Name: !Sub '${ResourcePrefix}${AWS::StackName}-EventRuleOnChangeSourceCodeCommit'
       EventBusName: !If 
