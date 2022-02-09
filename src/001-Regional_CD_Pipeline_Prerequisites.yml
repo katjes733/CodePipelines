@@ -548,6 +548,7 @@ Resources:
               eventPrefix = os.getenv('EVENT_PREFIX', 'custom')
               sourceSuffix = event['source'].replace("aws", "")
               repoArns = event['resources']
+              ebClient = boto3.client('events')
               for repoArn in event['resources']:
                   processedEventBusArns = set()
                   for eventBusArn in getDestinationConfiguration(repoArn):
@@ -561,16 +562,19 @@ Resources:
                               'EventBusName': eventBusArn
                           }
                           logger.debug(f"Event entries to be sent: {newEvent}")
-                          ebClient = boto3.client('events')
                           try:
                               ebClient.put_events(Entries = [newEvent])
                               logger.info(f"Event successfully forwarded to event bus: {eventBusArn}")
                               processedEventBusArns.add(eventBusArn)
-                          except botocore.exceptions.ClientError as error:
-                              if error.response['Error']['Code'] == 'AccessDeniedException':
+                          except botocore.exceptions.ClientError as err:
+                              errCode = err.response['Error']['Code']
+                              errMsg = err.response['Error']['Message']
+                              if errCode == 'AccessDeniedException':
                                   logger.error(f"Account {account} does not allow writing to the following event bus: {eventBusArn}")
                               else:
-                                  raise error
+                                  logger.error(f"Unexpected error: {errCode} {errMsg}")
+                          except Exception as e:
+                              logger.error(f"Unexpected error: {e}")
                       else:
                           logger.info(f"Event was already successfully forwarded to event bus {eventBusArn} before and is therefore skipped.")
 
