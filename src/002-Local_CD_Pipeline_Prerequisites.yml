@@ -1361,16 +1361,18 @@ Resources:
               errCode = err.response['Error']['Code']
               errMsg = err.response['Error']['Message']
               logger.error(f"Retry failed: {errCode} {errMsg}")
-              cardActionStatus = f"Retry of stage {fSN} failed: {errCode} {errMsg}"
-              statusCode = 403
+              cardActionStatus = f"Retry of stage {fSN} failed: {errMsg}"
+              
               retryB = {
-                  "codepipelineName": cp,
-                  "stageName": fSN,                      
-                  "executionId": eId,
-                  "messageCard": json.dumps(tMsg),
-                  "action": "Retry"
+                "codepipelineName": cp,
+                "stageName": fSN,                      
+                "executionId": eId,
+                "messageCard": json.dumps(tMsg),
+                "action": "Retry"
               }
-              tMsg['potentialAction'].append({"@type": "HttpPOST","name": "Retry failed stage", "target": apiUrl, "body": json.dumps(retryB)})
+              if errCode != "StageNotRetryableException":
+                statusCode = 403
+                tMsg['potentialAction'].append({"@type": "HttpPOST","name": "Retry failed stage", "target": apiUrl, "body": json.dumps(retryB)})
             
             return {
               "isBase64Encoded": "false",
