@@ -727,11 +727,14 @@ Resources:
                   EOT
               build:
                 commands:
+                  - export LANG=C.UTF-8
                   - cfn_nag_rules --output-format=json > cfn_nag_rules.json
                   - CFN_NAG_RESULT=$(cfn_nag_scan --input-path $PATH_TO_TEMPLATES --fail-on-warnings --output-format=json > cfn_nag_result.json && echo OK || echo FAILED)
+                  - echo "CFN_NAG_RESULT=$CFN_NAG_RESULT"
                   - python script.py cfn_nag_result.json CFN-NAG cfn_nag_result.xml --rules cfn_nag_rules.json
                   - cfn-lint --list-rules > cfn_lint_rules.txt
                   - CFN_LINT_RESULT=$(cfn-lint $PATH_TO_TEMPLATES/*.yml --format json > cfn_lint_result.json && echo OK || echo FAILED)
+                  - echo "CFN_LINT_RESULT=$CFN_LINT_RESULT"
                   - python script.py cfn_lint_result.json CFN-LINT cfn_lint_result.xml --rules cfn_lint_rules.txt --pathToTemplates $PATH_TO_TEMPLATES
                   - if [[ "$FAIL_BUILD" == "true" && ("$CFN_NAG_RESULT" == "FAILED" || "$CFN_LINT_RESULT" == "FAILED")]]; then printf "!####################################################################!\n\nFailing pipeline as failures in CloudFormation templates were detected\n\n!####################################################################!" && exit 1; fi
               post_build:
