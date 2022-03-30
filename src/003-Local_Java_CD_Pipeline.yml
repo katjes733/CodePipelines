@@ -323,7 +323,7 @@ Resources:
               commands:
                 - unzip -d ./JavaDoc $TARGET_ARTIFACT_NAME-javadoc.jar
                 - echo copy JavaDoc to s3://$JAVA_DOC_JMB_BUCKET
-                - aws s3 cp ./JavaDoc s3://$JAVA_DOC_JMB_BUCKET --recursive --exclude "META-INF/*" --sse AES256
+                - aws s3 cp ./JavaDoc s3://$JAVA_DOC_JMB_BUCKET --recursive --exclude "META-INF/*" --sse AES256 --acl bucket-owner-full-control
       TimeoutInMinutes: 5
   PublishJavaDocBucketAccessPolicy:
     Type: AWS::IAM::Policy
@@ -379,7 +379,7 @@ Resources:
             post_build:
               commands:
                 - echo copy artifact $TARGET_ARTIFACT_NAME to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH
-                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256
+                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256 --acl bucket-owner-full-control
       TimeoutInMinutes: 5
   Pipeline: 
     Type: AWS::CodePipeline::Pipeline
