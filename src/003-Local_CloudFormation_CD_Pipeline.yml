@@ -601,6 +601,7 @@ Resources:
           - Effect: Allow
             Action:
               - s3:PutObject
+              - s3:PutObjectAcl
               - s3:GetBucketPolicy
               - s3:GetObject
               - s3:ListBucket
@@ -792,11 +793,11 @@ Resources:
             post_build:
               commands:
                 - echo copy Cloudformation templates from CodeCommit to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CloudFormation
-                - aws s3 cp CloudFormation s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CloudFormation --recursive --sse AES256
+                - aws s3 cp CloudFormation s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CloudFormation --recursive --sse AES256 --acl bucket-owner-full-control
                 - echo copy Cognito Front End resources from CodeCommit to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CognitoHostedUI
-                - aws s3 cp Frontend/CognitoHostedUI s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CognitoHostedUI --recursive --sse AES256
+                - aws s3 cp Frontend/CognitoHostedUI s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/CognitoHostedUI --recursive --sse AES256 --acl bucket-owner-full-control
                 - echo copy Step Function resources from CodeCommit to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/StepFunctions
-                - aws s3 cp StepFunctions s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/StepFunctions --recursive --exclude "*.md" --sse AES256
+                - aws s3 cp StepFunctions s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/StepFunctions --recursive --exclude "*.md" --sse AES256 --acl bucket-owner-full-control
                 - echo wait 60s for replication to all regions
                 - sleep 60
           artifacts:
