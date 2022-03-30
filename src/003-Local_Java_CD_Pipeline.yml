@@ -261,6 +261,7 @@ Resources:
           - Effect: Allow
             Action:
               - s3:PutObject
+              - s3:PutObjectAcl
               - s3:GetBucketPolicy
               - s3:GetObject
               - s3:ListBucket
@@ -538,7 +539,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3-${Pipeline}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3'
   EventRuleOnChangeSourceCodeCommit:
     Type: AWS::Events::Rule
     Condition: IsChangeExecutionWithSourceCodeCommit
@@ -572,7 +573,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Cc-${Pipeline}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Cc'
   EventRuleOnSchedule:
     Type: AWS::Events::Rule
     Condition: IsScheduledExecution
@@ -582,7 +583,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Schedule-${Pipeline}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Schedule'
   EventRuleOnPipelineExecutionStateChange:
     Type: AWS::Events::Rule
     Properties:
@@ -603,7 +604,7 @@ Resources:
             - !Ref Pipeline
       Targets:
         - Arn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
-          Id: !Sub '${AWS::StackName}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-PipelineNotification'
           InputTransformer:
             InputPathsMap: 
               detail: "$.detail"
