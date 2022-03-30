@@ -930,7 +930,7 @@ Resources:
         - Name: !Sub '${JavaDocSubDomain}.${JavaDocDomain}'
           Type: A
           AliasTarget:
-            HostedZoneId: !GetAtt GetHostedZoneId.HostedZoneId
+            HostedZoneId: Z2FDTNDATAQYW2
             DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
 
   DetermineFinalExecutionRateInMinutes:
