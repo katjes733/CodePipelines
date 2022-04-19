@@ -261,6 +261,7 @@ Resources:
           - Effect: Allow
             Action:
               - s3:PutObject
+              - s3:PutObjectAcl
               - s3:GetBucketPolicy
               - s3:GetObject
               - s3:ListBucket
@@ -323,7 +324,7 @@ Resources:
               commands:
                 - unzip -d ./JavaDoc $TARGET_ARTIFACT_NAME-javadoc.jar
                 - echo copy JavaDoc to s3://$JAVA_DOC_JMB_BUCKET
-                - aws s3 cp ./JavaDoc s3://$JAVA_DOC_JMB_BUCKET --recursive --exclude "META-INF/*" --sse AES256 --acl bucket-owner-full-control
+                - aws s3 cp ./JavaDoc s3://$JAVA_DOC_JMB_BUCKET --recursive --exclude "META-INF/*" --sse AES256
       TimeoutInMinutes: 5
   PublishJavaDocBucketAccessPolicy:
     Type: AWS::IAM::Policy
@@ -379,7 +380,7 @@ Resources:
             post_build:
               commands:
                 - echo copy artifact $TARGET_ARTIFACT_NAME to s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH
-                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256 --acl bucket-owner-full-control
+                - aws s3 cp ./$TARGET_ARTIFACT_NAME s3://$TARGET_ARTIFACT_BUCKET/$TARGET_ARTIFACT_PATH/$TARGET_ARTIFACT_NAME --sse AES256
       TimeoutInMinutes: 5
   Pipeline: 
     Type: AWS::CodePipeline::Pipeline
@@ -538,7 +539,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3-${Pipeline}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-S3'
   EventRuleOnChangeSourceCodeCommit:
     Type: AWS::Events::Rule
     Condition: IsChangeExecutionWithSourceCodeCommit
@@ -572,7 +573,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Cc-${Pipeline}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Cc'
   EventRuleOnSchedule:
     Type: AWS::Events::Rule
     Condition: IsScheduledExecution
@@ -582,7 +583,7 @@ Resources:
       Targets:
         - Arn: !Sub 'arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}'
           RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
-          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Schedule-${Pipeline}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-Schedule'
   EventRuleOnPipelineExecutionStateChange:
     Type: AWS::Events::Rule
     Properties:
@@ -603,7 +604,7 @@ Resources:
             - !Ref Pipeline
       Targets:
         - Arn: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ResourcePrefix}CdNotificationToTeams'
-          Id: !Sub '${AWS::StackName}'
+          Id: !Sub '${ResourcePrefix}${AWS::StackName}-PipelineNotification'
           InputTransformer:
             InputPathsMap: 
               detail: "$.detail"
@@ -929,7 +930,7 @@ Resources:
         - Name: !Sub '${JavaDocSubDomain}.${JavaDocDomain}'
           Type: A
           AliasTarget:
-            HostedZoneId: !GetAtt GetHostedZoneId.HostedZoneId
+            HostedZoneId: Z2FDTNDATAQYW2
             DNSName: !GetAtt JavaDocJmbCloudFrontDistribution.DomainName
 
   DetermineFinalExecutionRateInMinutes:

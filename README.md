@@ -1,6 +1,9 @@
 # CodePipelines
 Set of CloudFormation Templates to setup more advanced CodePipelines such as deployment testing of CloudFromation templates continuously as well as building various other things
-This set of Cloudofmation templates sets up all necessary prerequisites and the actual CodePiplines
+This set of Cloudformation templates sets up all necessary prerequisites and the actual CodePiplines
+
+# Prerequisites
+1. Existing buckets that are used as targets for artifacts must have ACLs disabled (Object Ownership). This is the AWS recommended setting and defaulf for new buckets. With ACLs disabled, objects copied from other accounts become owned by the bucket owner automatically.
 
 # Usage
 1. In an arbitrary region (e.g. us-east-1), deploy Template 000.
