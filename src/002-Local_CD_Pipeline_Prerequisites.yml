@@ -345,6 +345,11 @@ Resources:
   # TODO: Consider moving to 001 template
   CodePipelineServiceRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F38
+            reason: "iam:PassRole explicitly restricted by condition"
     Properties:
       RoleName: !Sub '${ResourcePrefix}CD-${AWS::Region}-CodePipelineServiceRole'
       AssumeRolePolicyDocument:
@@ -368,7 +373,7 @@ Resources:
                   - codecommit:GetCommit
                   - codecommit:GetUploadArchiveStatus
                   - codecommit:UploadArchive
-                Resource: '*'
+                Resource: !Sub 'arn:aws:codecommit:*:${CodeCommitAccount}:*'
               - Effect: Allow
                 Action:
                   - codedeploy:CreateDeployment
@@ -376,24 +381,21 @@ Resources:
                   - codedeploy:GetDeployment
                   - codedeploy:GetDeploymentConfig
                   - codedeploy:RegisterApplicationRevision
-                Resource: '*'
+                Resource: 
+                  - !Sub 'arn:aws:codedeploy:*:${AWS::AccountId}:deploymentgroup:*/*'
+                  - !Sub 'arn:aws:codedeploy:*:${AWS::AccountId}:deploymentconfig:*'
+                  - !Sub 'arn:aws:codedeploy:*:${AWS::AccountId}:application:*'
               - Effect: Allow
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - devicefarm:ListProjects
-                  - devicefarm:ListDevicePools
-                  - devicefarm:GetRun
-                  - devicefarm:GetUpload
-                  - devicefarm:CreateUpload
-                  - devicefarm:ScheduleRun
-                Resource: '*'
+                Resource: !Sub 'arn:aws:codebuild:*:${AWS::AccountId}:project/*'
               - Effect: Allow
                 Action:
                   - lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:*:${AWS::AccountId}:function:*'
+              - Effect: Allow
+                Action:
                   - lambda:ListFunctions
                 Resource: '*'
               - Effect: Allow
@@ -401,6 +403,10 @@ Resources:
                   - iam:PassRole
                   - sns:Publish
                 Resource: '*'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - codepipeline.amazonaws.com
               - Effect: Allow
                 Action:
                   - elasticbeanstalk:*

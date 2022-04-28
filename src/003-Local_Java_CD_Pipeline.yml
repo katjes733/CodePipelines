@@ -208,7 +208,7 @@ Conditions:
   IsDynamicPipelineNamePrefixEmpty: !Equals [!Ref DynamicPipelineNamePrefix, '']
   IsPipelineNameEmpty: !Equals [!Ref PipelineName, '']  
   IsTargetArtifactBucketNameEmpty: !Equals [!Ref TargetArtifactBucketName, '']
-  IsPublishJavaDoc: !And [!Equals [!Ref JavaDocPublish, 'true'], !Equals [!Ref AWS::AccountId, !Ref JavaDocDefaultPublishingAccount], !Equals [!Ref AWS::Region, 'us-east-1']]
+  IsPublishJavaDoc: !And [!Equals [!Ref JavaDocPublish, 'true'], !Equals [!Ref AWS::AccountId, !Ref JavaDocDefaultPublishingAccount], !Equals [!Ref AWS::Region, 'us-east-1'], !Condition IsAcceptance]
 
 # -----------------------------------------------------------------------------
 # Resources
